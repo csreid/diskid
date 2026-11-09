@@ -1,0 +1,35 @@
+[Unit]
+Description=diskid: identify and rename ripped TV episodes
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Must be able to write to the watch directory (ARM's COMPLETED_PATH). On a
+# stock ARM install that is the user "arm"; edit User/Group to match.
+User=arm
+Group=arm
+EnvironmentFile=/etc/diskid/diskid.env
+ExecStart=/opt/diskid/.venv/bin/diskid watch ${DISKID_WATCH_DIR} $DISKID_ARGS
+Restart=on-failure
+RestartSec=30
+
+# State (state.json, reports/) -> /var/lib/diskid; Whisper model downloads
+# and the subtitle-index cache -> /var/cache/diskid.
+StateDirectory=diskid
+CacheDirectory=diskid
+Environment=HF_HOME=/var/cache/diskid/huggingface
+
+# Don't compete with ripping/transcoding for the Pi.
+Nice=10
+IOSchedulingClass=idle
+CPUSchedulingPolicy=idle
+
+# Light hardening. ProtectHome/ProtectSystem are deliberately not set: ARM's
+# default output lives under /home/arm, and systemd can't expand the env file's
+# paths in ReadWritePaths=. Add them via a drop-in if you want them.
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

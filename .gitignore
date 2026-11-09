@@ -1,0 +1,16 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Local subtitle database (35GB OPUS archive + derived index)
+subtitle_data/
+
+# Secrets
+.env
