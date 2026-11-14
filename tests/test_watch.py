@@ -115,3 +115,63 @@ def test_ignores_hidden_dirs_and_loose_files(tmp_path):
     make_disc(watch, name=".incomplete")
     (watch / "stray.mkv").write_bytes(b"x")
     assert w.scan_once() == 0 and not ident.calls
+
+
+def _events(tmp_path):
+    import json
+    p = tmp_path / "state" / "events.jsonl"
+    return [json.loads(line) for line in p.read_text().splitlines()]
+
+
+def test_dry_run_saves_plan_that_apply_can_carry_out_later(tmp_path):
+    from diskid import cache
+    from diskid.eventlog import EventLog
+    ident = StubIdentifier()
+    watch, w = watcher(tmp_path, ident, dry_run=True)
+    disc = make_disc(watch)
+    w.scan_once()
+    (plan,) = cache.list_plans(tmp_path / "state")
+    assert plan["dry_run"] and plan["applied"] is None and len(plan["entries"]) == 2
+    assert plan["entries"][0]["episode"] == "S01E01" and plan["entries"][0]["size"] == 10
+    # later, with no identification at all:
+    loaded = cache.load_mapping(plan["id"], tmp_path / "state")
+    results = cache.apply_plan(loaded, EventLog(tmp_path / "state" / "events.jsonl"))
+    assert all(r["renamed"] for r in results) and len(ident.calls) == 1
+    assert sorted(p.name for p in disc.iterdir()) == [
+        "Test Show - S01E01.mkv", "Test Show - S01E02.mkv"]
+    assert cache.load_mapping(plan["id"], tmp_path / "state")["applied"]["results"]
+    kinds = [e["event"] for e in _events(tmp_path)]
+    assert kinds.count("file_moved") == 2 and "plan_applied" in kinds and "disc_processed" in kinds
+
+
+def test_apply_refuses_a_file_that_changed_since_planning(tmp_path):
+    from diskid import cache
+    watch, w = watcher(tmp_path, StubIdentifier(), dry_run=True)
+    disc = make_disc(watch)
+    w.scan_once()
+    (disc / "title_t00.mkv").write_bytes(b"re-ripped, different size")
+    plan = cache.list_plans(tmp_path / "state")[0]
+    results = {r["file"].split("/")[-1]: r for r in cache.apply_plan(plan)}
+    assert results["title_t00.mkv"]["reason"].startswith("source changed")
+    assert results["title_t01.mkv"]["renamed"]
+
+
+def test_live_run_logs_events_and_prunes_empty_dirs(tmp_path):
+    ident = StubIdentifier()
+    out = tmp_path / "library"
+    ident_files = ident.identify_disc
+
+    def to_library(directory, show=None):
+        d = ident_files(directory, show)
+        from dataclasses import replace
+        return DiscResult(d.directory, d.show, [
+            replace(f, target_path=out / "Test Show" / f.target_path.name) for f in d.files])
+
+    ident.identify_disc = to_library
+    watch, w = watcher(tmp_path, ident)
+    disc = make_disc(watch)
+    w.scan_once()
+    assert sorted(p.name for p in (out / "Test Show").iterdir()) == [
+        "Test Show - S01E01.mkv", "Test Show - S01E02.mkv"]
+    assert not disc.exists()                       # emptied by the move, pruned
+    assert [e["event"] for e in _events(tmp_path)].count("file_moved") == 2

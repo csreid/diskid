@@ -84,14 +84,6 @@ def make_identifier(args, quiet: bool = False) -> Identifier:
     return Identifier(config, progress=None if quiet else progress)
 
 
-def _entry(res: FileResult) -> dict:
-    return {
-        "file": str(res.path.resolve()),
-        "target": str(res.target_path.resolve()) if res.target_path else None,
-        "confident": res.identified,
-    }
-
-
 def cmd_identify(args) -> int:
     ident = make_identifier(args)
     try:
@@ -110,7 +102,8 @@ def cmd_identify(args) -> int:
 
     mapping_id = None
     if not args.apply:
-        mapping_id = cache.save_mapping("identify", res.show.title, [_entry(res)])
+        mapping_id = cache.save_mapping(
+            "identify", res.show.title, [cache.entry_for(res)], show_imdb=res.show.imdb_id)
 
     note = ""
     if res.episode and res.episode.order == "tmdb" and (
@@ -188,11 +181,13 @@ def cmd_identify_disc(args) -> int:
             "renamed": renamed,
             "_note": note,
         })
-        mapping_entries.append(_entry(res))
+        mapping_entries.append(cache.entry_for(res))
 
     mapping_id = None
     if not args.apply:
-        mapping_id = cache.save_mapping("identify-disc", disc.show.title, mapping_entries)
+        mapping_id = cache.save_mapping(
+            "identify-disc", disc.show.title, mapping_entries,
+            show_imdb=disc.show.imdb_id, source_dir=str(args.dir.resolve()))
 
     if args.json:
         for r in results:
@@ -242,36 +237,46 @@ def cmd_watch(args) -> int:
 
 
 def cmd_apply(args) -> int:
-    mapping = cache.load_mapping(args.mapping_id)
-    if mapping is None:
-        sys.exit(f"error: no such mapping: {args.mapping_id}")
+    from .eventlog import EventLog
 
-    results = []
+    events = EventLog(cache.default_state_dir() / "events.jsonl")
     ok = True
-    for entry in mapping["entries"]:
-        file = Path(entry["file"])
-        target = Path(entry["target"]) if entry["target"] else None
-        if not entry["confident"] or target is None:
-            renamed, reason = False, "not confident"
+    for ref in args.plan:
+        plan = cache.load_mapping(ref)
+        if plan is None:
+            sys.exit(f"error: no such plan: {ref}")
+        if plan.get("applied"):
+            log(f"note: plan {plan['id']} was already applied at {plan['applied']['at']}; "
+                "retrying any entries still unmoved")
+        results = cache.apply_plan(plan, events)
+        ok = ok and all(r["renamed"] for r in results
+                        if any(e["file"] == r["file"] and e.get("confident") for e in plan["entries"]))
+        if args.json:
+            print(json.dumps({"mapping_id": plan["id"], "show": plan["show"],
+                              "results": results}, indent=2))
         else:
-            renamed_path, reason = rename_to_target(file, target)
-            renamed = renamed_path is not None
-            ok = ok and renamed
-        results.append({
-            "file": str(file), "target": str(target) if target else None,
-            "renamed": renamed, "reason": reason,
-        })
-
-    if args.json:
-        print(json.dumps({"mapping_id": mapping["id"], "show": mapping["show"],
-                           "results": results}, indent=2))
-    else:
-        for r in results:
-            if r["renamed"]:
-                print(f"renamed: {r['file']} -> {r['target']}")
-            else:
-                print(f"skipped: {r['file']} ({r['reason']})")
+            for r in results:
+                if r["renamed"]:
+                    print(f"moved: {r['file']} -> {r['target']}")
+                else:
+                    print(f"skipped: {r['file']} ({r['reason']})")
     return 0 if ok else 2
+
+
+def cmd_plans(args) -> int:
+    plans = cache.list_plans()
+    if args.json:
+        print(json.dumps([{k: v for k, v in p.items() if k != "entries"}
+                          | {"files": len(p["entries"])} for p in plans], indent=2))
+        return 0
+    if not plans:
+        print(f"no plans in {cache.plans_dir()}")
+    for p in plans:
+        n_ok = sum(bool(e.get("confident")) for e in p["entries"])
+        state = f"applied {p['applied']['at']}" if p.get("applied") else "PENDING"
+        print(f"{p['id']}  {p['created']}  {p['command']:<13} {p['show'] or '?':<28} "
+              f"{n_ok}/{len(p['entries'])} identified  {state}")
+    return 0
 
 
 def main() -> None:
@@ -364,9 +369,14 @@ def main() -> None:
                               "or ~/.local/state/diskid)")
     common(p_watch, watch=True)
 
-    p_apply = sub.add_parser("apply", help="apply a mapping produced by an earlier dry run")
-    p_apply.add_argument("mapping_id")
+    p_apply = sub.add_parser("apply", help="carry out saved plan(s) from an earlier dry run, "
+                                           "without re-running identification")
+    p_apply.add_argument("plan", nargs="+", metavar="PLAN",
+                         help="plan id (see `diskid plans`) or path to a plan .json")
     p_apply.add_argument("--json", action="store_true", help="machine-readable output on stdout")
+
+    p_plans = sub.add_parser("plans", help="list saved plans and whether they were applied")
+    p_plans.add_argument("--json", action="store_true", help="machine-readable output on stdout")
 
     args = parser.parse_args()
     if args.command == "watch":
@@ -379,6 +389,8 @@ def main() -> None:
 
     if args.command == "apply":
         sys.exit(cmd_apply(args))
+    if args.command == "plans":
+        sys.exit(cmd_plans(args))
     if args.command == "watch":
         if not args.dir.is_dir():
             sys.exit(f"error: no such directory: {args.dir}")

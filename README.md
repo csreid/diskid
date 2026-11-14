@@ -115,8 +115,9 @@ uv run diskid apply MAPPING_ID
 uv run diskid watch DIR [--dry-run]    # service mode, see below
 ```
 
-Dry runs (no `--apply`) cache the proposed renames and print a mapping id;
-`diskid apply MAPPING_ID` replays them without re-running matching. Exit code 2
+Dry runs (no `--apply`) save a *plan* and print its id; `diskid apply PLAN` (an id or
+a path to the plan file) carries it out without re-running matching, and
+`diskid plans` lists them (PENDING vs applied). See "Plans and the event log". Exit code 2
 means at least one file was not confidently identified. Useful flags: `--clips`,
 `--clip-duration`, `--min-score`, `--model`, `--language`, `--order {tmdb,imdb}`,
 `--zip`, `--start`, `--eps`, `--min-clips`.
@@ -151,6 +152,24 @@ inside the watched directory. Files that aren't confidently
 identified, and discs whose show can't be determined (movies, unknown shows),
 are left untouched. A disc is processed once; it is reprocessed only if its file
 list or sizes change. Use `--dry-run` first to see what it would do.
+
+### Plans and the event log
+
+Everything is kept under the state directory (`$STATE_DIRECTORY`, else
+`~/.local/state/diskid`), not in a temp dir:
+
+- `plans/<time>-<id>.json`: one per processed disc (also for live runs, as an
+  audit trail): for each file its `target`, `confident`, `episode`, `score`,
+  `size`, and the best guess when unsure. `diskid apply <id>` moves the confident
+  entries, never overwrites, refuses a file whose size changed since the plan, and
+  records the outcome in the plan (`applied`). This is how a `--dry-run` becomes
+  real without redoing speech-to-text; `watch` prints `apply with: diskid apply <id>`.
+- `events.jsonl`: append-only, one JSON object per line (`disc_processed`,
+  `disc_no_show`, `disc_error`, `file_moved`, `file_not_moved`, `plan_applied`),
+  e.g. `jq 'select(.event=="file_not_moved")' events.jsonl`.
+- `reports/`: the full `DiscResult` with candidate rankings, for reviewing misses.
+- `state.json`: which discs are done (note: a dry-run disc counts as done, so
+  leaving `--dry-run` won't redo it; `diskid apply` its plan instead).
 
 State lives in `$STATE_DIRECTORY` (or `~/.local/state/diskid`): `state.json`
 plus a JSON report per disc under `reports/` (the full `DiscResult`, including
