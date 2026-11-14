@@ -13,6 +13,7 @@ import sys
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from typing import NamedTuple
 
 API = "https://api.themoviedb.org/3"
 
@@ -42,6 +43,12 @@ def _get(path: str, key: str, **params) -> dict:
         return json.load(resp)
 
 
+class TmdbEpisode(NamedTuple):
+    season: int
+    episode: int
+    title: str | None
+
+
 class EpisodeMapper:
     """Resolves IMDb episode ids to TMDB (season, episode) numbering."""
 
@@ -49,7 +56,7 @@ class EpisodeMapper:
         self.key = key
         self.show_imdb_id = show_imdb_id
         self._show_tmdb_id: int | None = None
-        self._cache: dict[int, tuple[int, int] | None] = {}
+        self._cache: dict[int, TmdbEpisode | None] = {}
 
     def show_tmdb_id(self) -> int | None:
         if self._show_tmdb_id is None:
@@ -59,8 +66,8 @@ class EpisodeMapper:
             self._show_tmdb_id = shows[0]["id"] if shows else -1
         return None if self._show_tmdb_id == -1 else self._show_tmdb_id
 
-    def map_episode(self, episode_imdb_id: int) -> tuple[int, int] | None:
-        """(season, episode) in TMDB numbering, or None if unknown to TMDB."""
+    def map_episode(self, episode_imdb_id: int) -> TmdbEpisode | None:
+        """(season, episode, title) in TMDB numbering, or None if unknown to TMDB."""
         if episode_imdb_id in self._cache:
             return self._cache[episode_imdb_id]
         result = None
@@ -69,7 +76,8 @@ class EpisodeMapper:
                          external_source="imdb_id")
             for hit in found.get("tv_episode_results", []):
                 if hit.get("show_id") == self.show_tmdb_id():
-                    result = (hit["season_number"], hit["episode_number"])
+                    result = TmdbEpisode(
+                        hit["season_number"], hit["episode_number"], hit.get("name") or None)
                     break
         except OSError as e:
             print(f"warning: TMDB lookup failed for tt{episode_imdb_id:07d}: {e}",

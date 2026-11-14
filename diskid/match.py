@@ -54,6 +54,7 @@ NULL_KEY: EpisodeKey = (0, 0)  # "not in this database" -- not a real (season, e
 STT_ERROR_RATE = 0.15       # eps: STT word-error rate
 RETRIEVAL_HIT_RATE = 0.8    # pi: P(TF-IDF's top line is the true line | episode is correct)
 TIME_JITTER_SIGMA = 3.0     # seconds: subtitle timing jitter + window-start ambiguity
+TEXT_LLR_CAP = 4.0        # nats a clip's text may beat the typical episode by (see observe)
 GRID_RANGE = 180.0          # seconds, +/-, of alignment offset considered
 GRID_STEP = 1.0
 
@@ -335,15 +336,25 @@ class BayesianIdentifier:
         clip_words = _normalize(clip_text)
         per_file = _retrieve_per_file(self.docs, clip_text)
 
-        for key, windows in per_file.items():
+        # Retrieval takes the best window per file, so every episode gets a
+        # "best-effort" text score; for a short or common phrase most episodes
+        # score high (the corpus-level document frequency of the phrase). Judge
+        # each file relative to that bulk: its text evidence may exceed the
+        # 90th percentile over all files by at most TEXT_LLR_CAP nats.
+        scored = {
+            key: [(_text_llr(clip_words, _aligned_indices(clip_words, _normalize(w)),
+                             self.bg, self.eps), t) for w, t in windows]
+            for key, windows in per_file.items()
+        }
+        all_llrs = [llr for v in scored.values() for llr, _ in v]
+        ceiling = (float(np.percentile(all_llrs, 90)) + TEXT_LLR_CAP) if all_llrs else math.inf
+
+        for key, windows in scored.items():
             belief = self.beliefs[key]
             file_llrs = []
-            for window_text, window_time in windows:
-                window_words = _normalize(window_text)
-                matched = _aligned_indices(clip_words, window_words)
-                text_llr = _text_llr(clip_words, matched, self.bg, self.eps)
+            for text_llr, window_time in windows:
                 delta_hat = window_time - capture_time
-                file_llrs.append(text_llr + _time_llr(delta_hat, self.deltas))
+                file_llrs.append(min(text_llr, ceiling) + _time_llr(delta_hat, self.deltas))
 
             # median across an episode's files, per delta bin -- a misfiled
             # file's spurious peak gets outvoted bin-by-bin, not averaged in.

@@ -5,6 +5,7 @@ description = "Identify TV episodes in ripped video files via subtitle fingerpri
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "jinja2>=3.1.6",
     "numpy>=2.5.1",
     "scikit-learn>=1.9.0",
     "tqdm>=4.68.4",

@@ -24,7 +24,7 @@ class StubIdentifier:
             ref = EpisodeRef(1, i, 1, i, "imdb")
             files.append(FileResult(
                 path=p, status="identified", show=SHOW, episode=ref,
-                target_name=f"Test Show - S01E{i:02d}{p.suffix}"))
+                target_path=p.with_name(f"Test Show - S01E{i:02d}{p.suffix}")))
         return DiscResult(directory, SHOW, files)
 
 

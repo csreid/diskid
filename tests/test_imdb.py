@@ -25,6 +25,8 @@ def test_resolve_show_candidates_filters_non_series(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen(FUTURAMA_SUGGESTIONS))
     candidates = resolve_show_candidates("futurama")
     assert candidates == [(149460, "Futurama"), (8964678, "Futurama")]
+    from diskid.imdb import resolve_show_hits
+    assert resolve_show_hits("futurama") == [(149460, "Futurama", 1999), (8964678, "Futurama", 1964)]
 
 
 def test_resolve_show_candidates_prefers_year_match(monkeypatch):

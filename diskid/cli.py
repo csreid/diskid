@@ -20,7 +20,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from . import cache, match, subdb
+from . import cache, layout, match, subdb
 from .identify import (  # noqa: F401  (re-exported for existing importers)
     DiscResult,
     FileResult,
@@ -56,7 +56,8 @@ def make_identifier(args, quiet: bool = False) -> Identifier:
     """Build an Identifier from parsed CLI args, with tqdm/stderr progress."""
     config = IdentifierConfig(
         model=args.model, language=args.language, clip_duration=args.clip_duration,
-        max_clips=args.clips, start=getattr(args, "start", None), min_score=args.min_score, eps=args.eps,
+        max_clips=args.clips, min_clips=args.min_clips,
+        output_dir=args.output_dir, template=args.template, start=getattr(args, "start", None), min_score=args.min_score, eps=args.eps,
         order=args.order, zip_path=args.zip,
         stt_url=args.stt_url, stt_model=args.stt_model,
         stt_api_key=os.environ.get("DISKID_STT_API_KEY"), stt_timeout=args.stt_timeout,
@@ -124,7 +125,7 @@ def cmd_identify(args) -> int:
             "show_id": res.show.imdb_id,
             "ranked": ranked_json(res.candidates),
             "confident": res.identified,
-            "target": res.target_name,
+            "target": res.target_rel,
             "renamed": renamed,
             "mapping_id": mapping_id,
         }, indent=2))
@@ -135,11 +136,11 @@ def cmd_identify(args) -> int:
         print(f"\nbest match: S{best.season:02d}E{best.episode:02d} "
               f"(score {best.score:.3f}, {verdict})")
         if renamed:
-            print(f"renamed to: {res.target_name}{note}")
-        elif res.target_name and args.apply:
+            print(f"renamed to: {res.target_rel}{note}")
+        elif res.target_rel and args.apply:
             print(f"not renamed: {fail_reason}")
-        elif res.target_name:
-            print(f"would rename to: {res.target_name}{note} (mapping id: {mapping_id}, "
+        elif res.target_rel:
+            print(f"would rename to: {res.target_rel}{note} (mapping id: {mapping_id}, "
                   f"apply with: diskid apply {mapping_id})")
     return 0 if res.identified else 2
 
@@ -183,7 +184,7 @@ def cmd_identify_disc(args) -> int:
                            if res.episode and c.key == (res.episode.imdb_season,
                                                         res.episode.imdb_episode)), None),
             "best_score": res.best.score if res.best else None,
-            "target": res.target_name,
+            "target": res.target_rel,
             "renamed": renamed,
             "_note": note,
         })
@@ -214,6 +215,11 @@ def cmd_watch(args) -> int:
     import signal
     from .watch import DiscWatcher, WatchConfig, default_state_dir
 
+    out = args.output_dir
+    if out is not None and (out.resolve() == args.dir.resolve()
+                            or args.dir.resolve() in out.resolve().parents):
+        sys.exit("error: --output-dir must not be inside the watched directory "
+                 "(its contents would be scanned as discs)")
     ident = make_identifier(args, quiet=True)
     watcher = DiscWatcher(ident, WatchConfig(
         watch_dir=args.dir, state_dir=args.state_dir or default_state_dir(),
@@ -287,6 +293,22 @@ def main() -> None:
         p.add_argument("-c", "--clips", type=int, default=10,
                        help="maximum clips to sample before giving up -- sampling "
                             "stops early once --min-score is cleared (default: 10)")
+        p.add_argument("-o", "--output-dir", type=Path, metavar="DIR",
+                       default=Path(os.environ["DISKID_OUTPUT_DIR"])
+                       if os.environ.get("DISKID_OUTPUT_DIR") else None,
+                       help="root the --template is relative to; identified files are "
+                            "moved under it (default: $DISKID_OUTPUT_DIR, else rename in "
+                            "place, beside the source)")
+        p.add_argument("--template", metavar="JINJA",
+                       default=os.environ.get("DISKID_TEMPLATE") or layout.DEFAULT_TEMPLATE,
+                       help=("destination path, relative to --output-dir. Variables: show, "
+                             "year, season, episode, code, episode_title, ext, stem, order, "
+                             "show_imdb, episode_imdb; filter |pad. Example: "
+                             f"'{layout.LIBRARY_TEMPLATE}' "
+                             f"(default: $DISKID_TEMPLATE, else '{layout.DEFAULT_TEMPLATE}')").replace("%", "%%"))
+        p.add_argument("--min-clips", type=int, default=3,
+                       help="clips to observe before sampling may stop early, even if "
+                            "--min-score is already cleared (default: 3)")
         p.add_argument("-m", "--model", default="small",
                        help="local whisper model size (default: small); with --stt-url it "
                             "only picks the default server model name")
@@ -327,8 +349,8 @@ def main() -> None:
     common(p_disc)
 
     p_watch = sub.add_parser(
-        "watch", help="watch a directory of ripped discs (e.g. ARM's COMPLETED_PATH) "
-                      "and rename new ones in place")
+        "watch", help="watch a directory of ripped discs (e.g. ARM's COMPLETED_PATH), "
+                      "identify new ones, and rename/move them per --template")
     p_watch.add_argument("dir", type=Path)
     p_watch.add_argument("--dry-run", action="store_true",
                          help="identify and write reports, but never rename")

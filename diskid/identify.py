@@ -32,15 +32,16 @@ carries the IMDb numbering too.
 from __future__ import annotations
 
 import dataclasses
+import errno
 import logging
-import re
+import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-from . import audio, imdb, stt, subdb, tmdb
+from . import audio, imdb, layout, stt, subdb, tmdb
 from .match import (
     STT_ERROR_RATE,
     BayesianIdentifier,
@@ -80,12 +81,21 @@ class IdentifierConfig:
     """Seconds of audio per transcribed clip."""
     max_clips: int = 10
     """Cap on clips sampled per file; sampling stops early once confident."""
+    min_clips: int = 3
+    """Clips that must be observed before sampling may stop early. One
+    coincidental line match can clear `min_score` on its own; requiring several
+    clips lets a wrong episode be contradicted. Capped by the clips available."""
     start: float | None = None
     """If set, sample a single clip at this offset (seconds) instead."""
     min_score: float = 0.99
     """Posterior probability the top episode must reach to count as identified."""
     eps: float = STT_ERROR_RATE
     """Assumed STT word-error rate (a tuning knob; see match.py)."""
+    output_dir: Path | None = None
+    """Root that `template` is relative to. None: relative to each file's own folder
+    (i.e. rename in place)."""
+    template: str = layout.DEFAULT_TEMPLATE
+    """Jinja template for the destination path; see `diskid.layout`."""
     order: Order = "tmdb"
     """Numbering for `FileResult.episode`/filenames: "tmdb" or "imdb"."""
     zip_path: Path = subdb.DEFAULT_ZIP
@@ -110,12 +120,20 @@ class IdentifierConfig:
             raise ValueError("min_score must be in (0, 1)")
         if self.max_clips < 1:
             raise ValueError("max_clips must be >= 1")
+        try:
+            layout.validate(self.template)
+        except layout.TemplateError as e:
+            raise ValueError(f"bad template: {e}") from e
+        if self.min_clips < 1:
+            raise ValueError("min_clips must be >= 1")
 
 
 @dataclass(frozen=True)
 class Show:
     imdb_id: int
     title: str
+    year: int | None = None
+    """Year the series began, when known (IMDb's suggestion API supplies it)."""
 
     @property
     def imdb_tt(self) -> str:
@@ -136,6 +154,8 @@ class EpisodeRef:
     which is "imdb" if a requested TMDB mapping was unavailable)."""
     imdb_id: int | None = None
     """The episode's own IMDb numeric id, when the archive records it."""
+    title: str | None = None
+    """The episode's name, when TMDB supplied it (needs a TMDB key)."""
 
     @property
     def code(self) -> str:
@@ -162,8 +182,11 @@ class FileResult:
     clips_used: int = 0
     duration: float | None = None
     """File runtime in seconds."""
-    target_name: str | None = None
-    """Suggested filename (e.g. 'Show - S01E02.mkv'); set iff identified."""
+    target_path: Path | None = None
+    """Where the file should go, from the template (under `output_dir`, else
+    beside the source); set iff identified."""
+    target_rel: str | None = None
+    """`target_path` relative to its base, e.g. 'Show (2020)/Season 01/Show - S01E02.mkv'."""
     warnings: list[str] = field(default_factory=list)
     error: str | None = None
 
@@ -177,8 +200,22 @@ class FileResult:
         return self.candidates[0] if self.candidates else None
 
     @property
-    def target_path(self) -> Path | None:
-        return self.path.with_name(self.target_name) if self.target_name else None
+    def target_name(self) -> str | None:
+        """Just the filename of `target_path`."""
+        return self.target_path.name if self.target_path else None
+
+    def template_vars(self) -> dict[str, Any] | None:
+        """Structured identification facts (what the path template is rendered
+        with), or None when the file isn't identified."""
+        if not (self.identified and self.show and self.episode):
+            return None
+        ep = self.episode
+        return layout.template_vars(
+            show=self.show.title, year=self.show.year, season=ep.season,
+            episode=ep.episode, episode_title=ep.title, ext=self.path.suffix,
+            stem=self.path.stem, order=ep.order, show_imdb=self.show.imdb_tt,
+            episode_imdb=f"tt{ep.imdb_id:07d}" if ep.imdb_id else None,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return _jsonable(self)
@@ -234,6 +271,10 @@ def _jsonable(obj: Any) -> Any:
         d = {f.name: _jsonable(getattr(obj, f.name)) for f in dataclasses.fields(obj)}
         if isinstance(obj, ConsensusScore):
             d["key"] = [obj.season, obj.episode]
+        if isinstance(obj, EpisodeRef):
+            d["code"] = obj.code
+        if isinstance(obj, FileResult):
+            d["target_name"] = obj.target_name
         return d
     if isinstance(obj, Path):
         return str(obj)
@@ -267,8 +308,7 @@ def sample_clips(total: float, start: float | None, n_clips: int, duration: floa
     return [lo + i * step for i in range(n_clips)]
 
 
-def sanitize_filename(name: str) -> str:
-    return re.sub(r'[<>:"/\\|?*]', "", name).strip()
+sanitize_filename = layout.sanitize_filename
 
 
 def episode_filename(show_title: str, season: int, episode: int, suffix: str) -> str:
@@ -277,7 +317,11 @@ def episode_filename(show_title: str, season: int, episode: int, suffix: str) ->
 
 
 def rename_to_target(video: Path, target: Path) -> tuple[Path | None, str]:
-    """Rename in place, never overwriting; returns (new path, "") or (None, reason)."""
+    """Move `video` to `target`, creating folders; never overwrites.
+
+    Returns (new path, "") or (None, reason). Falls back to copy-and-delete
+    when `target` is on another filesystem.
+    """
     if target == video:
         return video, ""
     if not video.is_file():
@@ -285,7 +329,13 @@ def rename_to_target(video: Path, target: Path) -> tuple[Path | None, str]:
     if target.exists():
         return None, "target exists"
     try:
-        video.rename(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            video.rename(target)
+        except OSError as e:
+            if e.errno != errno.EXDEV:
+                raise
+            shutil.move(video, target)
     except OSError as e:
         return None, f"rename failed: {e.strerror}"
     return target, ""
@@ -370,7 +420,7 @@ class Identifier:
 
     def resolve_show(self, name: str, year: int | None = None) -> Show:
         """Look up a show by name on IMDb. Raises `ShowNotFoundError`."""
-        hits = imdb.resolve_show_candidates(name, year)
+        hits = imdb.resolve_show_hits(name, year)
         if not hits:
             raise ShowNotFoundError(f"no TV series found on IMDb for {name!r}")
         return Show(*hits[0])
@@ -500,7 +550,7 @@ class Identifier:
             text = self._transcribe_clip(video, start)
             ident.observe(start + cfg.clip_duration / 2, text)
             self._emit("transcribing", path=video, clip=i, max_clips=len(starts), text=text)
-            if ident.confident(cfg.min_score):
+            if i >= cfg.min_clips and ident.confident(cfg.min_score):
                 break
         return ident
 
@@ -549,16 +599,16 @@ class Identifier:
         best: tuple[float, BayesianIdentifier, _ShowData] | None = None
         for name, year in guesses:
             try:
-                hits = imdb.resolve_show_candidates(name, year)
+                hits = imdb.resolve_show_hits(name, year)
             except OSError as e:
                 log.warning("IMDb lookup failed for %r: %s", name, e)
                 continue
-            for show_id, title in hits[:2]:
+            for show_id, title, show_year in hits[:2]:
                 if show_id in seen or len(seen) >= MAX_SHOW_GUESSES:
                     continue
                 seen.add(show_id)
                 try:
-                    data = self._load_show(Show(show_id, title))
+                    data = self._load_show(Show(show_id, title, show_year))
                 except ShowNotFoundError:
                     continue
                 self._emit("trying_show", path=video,
@@ -590,7 +640,8 @@ class Identifier:
             ep_id = data.imdb_ids.get(ep.key)
             mapped = mapper.map_episode(ep_id) if (mapper and ep_id) else None
             if mapped is not None:
-                return EpisodeRef(mapped[0], mapped[1], ep.season, ep.episode, "tmdb", ep_id), []
+                return EpisodeRef(mapped.season, mapped.episode, ep.season, ep.episode,
+                                  "tmdb", ep_id, mapped.title), []
             ws = list(warnings)
             if mapper is not None:
                 ws.append(f"no TMDB mapping for IMDb S{ep.season:02d}E{ep.episode:02d}; "
@@ -628,12 +679,11 @@ class Identifier:
                 )
             return FileResult(status="uncertain", warnings=warnings, **common)
         ref, warnings = numberer(assigned)
-        return FileResult(
-            status="identified",
-            episode=ref,
-            target_name=episode_filename(
-                common["show"].title, ref.season, ref.episode, raw.path.suffix,
-            ),
-            warnings=warnings,
-            **common,
-        )
+        result = FileResult(status="identified", episode=ref, warnings=warnings, **common)
+        try:
+            rel = layout.render(self.config.template, result.template_vars())
+        except layout.TemplateError as e:  # e.g. a bad value for a filter at render time
+            return dataclasses.replace(
+                result, status="failed", episode=None, error=f"template: {e}")
+        base = self.config.output_dir or raw.path.parent
+        return dataclasses.replace(result, target_path=base / rel, target_rel=str(rel))

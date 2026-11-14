@@ -6,12 +6,13 @@ import urllib.parse
 import urllib.request
 
 
-def resolve_show_candidates(name: str, year: int | None = None) -> list[tuple[int, str]]:
-    """All plausible (numeric imdb id, canonical title) matches for a show name.
+def resolve_show_hits(name: str, year: int | None = None) -> list[tuple[int, str, int | None]]:
+    """All plausible (numeric imdb id, canonical title, start year) matches for a show name.
 
     Collects every tvSeries/tvMiniSeries hit from the suggestion API, ranked
     so a hit whose start year matches `year` sorts first (ties/no-year-given
-    keep the API's own relevance order, which is already rank-sorted).
+    keep the API's own relevance order, which is already rank-sorted). The
+    start year is None when IMDb doesn't give one.
     """
     q = urllib.parse.quote(name.lower())
     url = f"https://v2.sg.media-imdb.com/suggestion/{name[0].lower()}/{q}.json"
@@ -20,7 +21,12 @@ def resolve_show_candidates(name: str, year: int | None = None) -> list[tuple[in
     hits = [hit for hit in data.get("d", []) if hit.get("qid") in ("tvSeries", "tvMiniSeries")]
     if year is not None:
         hits.sort(key=lambda hit: hit.get("y") != year)
-    return [(int(hit["id"].removeprefix("tt")), hit["l"]) for hit in hits]
+    return [(int(hit["id"].removeprefix("tt")), hit["l"], hit.get("y")) for hit in hits]
+
+
+def resolve_show_candidates(name: str, year: int | None = None) -> list[tuple[int, str]]:
+    """`resolve_show_hits` without the year: (numeric imdb id, canonical title)."""
+    return [(i, t) for i, t, _ in resolve_show_hits(name, year)]
 
 
 def resolve_show(name: str) -> tuple[int, str]:

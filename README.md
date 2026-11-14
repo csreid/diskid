@@ -65,11 +65,13 @@ Pass a `progress` callback to `Identifier(...)` to receive `ProgressEvent`s.
 - **`FileResult`**: `path`, `status` (`"identified"` / `"uncertain"` / `"failed"`),
   `show`, `episode` (`EpisodeRef`, only when identified), `candidates` (top 10
   `ConsensusScore`s, best first), `null_probability` (posterior the file is *not* any
-  episode, e.g. an extra), `clips_used`, `duration`, `target_name`, `target_path`,
-  `warnings`, `error`. Plus `.identified`, `.best`, `.to_dict()`.
+  episode, e.g. an extra), `clips_used`, `duration`, `target_path` (full destination from the template), `target_rel`,
+  `target_name`, `warnings`, `error`. Plus `.identified`, `.best`, `.to_dict()`.
 - **`EpisodeRef`**: `season`, `episode` (in the requested numbering),
   `imdb_season`, `imdb_episode`, `order` (`"tmdb"`/`"imdb"`: what was *actually*
-  applied), `imdb_id`, `.code` (`"S01E02"`).
+  applied), `imdb_id`, `title` (episode name, needs a TMDB key), `.code` (`"S01E02"`).
+  `Show` has `imdb_id`, `title` and `year`. `FileResult.template_vars()` returns the
+  structured facts the path template is rendered with.
 - **`DiscResult`**: `directory`, `show`, `files`, `.identified`, `.unidentified`, `.to_dict()`.
 - **`ConsensusScore`**: `season`, `episode` (IMDb numbering), `score` (posterior),
   `offset`, `n_clips`, `n_files`, `.key`.
@@ -117,14 +119,35 @@ Dry runs (no `--apply`) cache the proposed renames and print a mapping id;
 `diskid apply MAPPING_ID` replays them without re-running matching. Exit code 2
 means at least one file was not confidently identified. Useful flags: `--clips`,
 `--clip-duration`, `--min-score`, `--model`, `--language`, `--order {tmdb,imdb}`,
-`--zip`, `--start`, `--eps`.
+`--zip`, `--start`, `--eps`, `--min-clips`.
+
+### Output layout
+
+By default files are renamed in place (`Show - S01E02.mkv`). To move them into a
+library instead, give `--output-dir` and a Jinja `--template` (a path relative to
+that directory; folders are created as needed, nothing is ever overwritten):
+
+```sh
+diskid identify-disc "Firefly (2002)" --apply -o /srv/media/shows \
+  --template '{{ show }}{% if year %} ({{ year }}){% endif %}/Season {{ season|pad }}/{{ show }} - {{ code }}{{ ext }}'
+# -> /srv/media/shows/Firefly (2002)/Season 01/Firefly - S01E02.mkv
+```
+
+Variables: `show`/`series`, `year` (series start year, `""` if unknown), `season`,
+`episode`, `code` (`S01E02`), `episode_title` (`""` without a TMDB key), `ext`,
+`stem` (original name), `order`, `show_imdb`, `episode_imdb`. `{{ season|pad }}`
+zero-pads (`|pad(3)` for three digits). Text values have `/ \ : * ? " < > |`
+stripped so a title can't create folders; unknown variables, absolute paths and
+`..` are rejected up front. `diskid.LIBRARY_TEMPLATE` is the layout above.
 
 ## Running as a service (Raspberry Pi / ARM)
 
 `diskid watch DIR` polls ARM's `COMPLETED_PATH`. Each subfolder is one disc
 (`Title (Year)/title_tNN.mkv`); once a disc has been unmodified for `--settle`
 seconds (default 120) it is identified and its confidently identified files
-are renamed in place (never overwriting). Files that aren't confidently
+are renamed in place, or moved into `--output-dir` per `--template` (never
+overwriting; folders left empty by the move are removed). `--output-dir` must not be
+inside the watched directory. Files that aren't confidently
 identified, and discs whose show can't be determined (movies, unknown shows),
 are left untouched. A disc is processed once; it is reprocessed only if its file
 list or sizes change. Use `--dry-run` first to see what it would do.

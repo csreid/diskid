@@ -66,6 +66,23 @@ def last_activity(directory: Path) -> float:
     return newest
 
 
+def prune_empty_dirs(root: Path) -> None:
+    """Remove `root`'s empty subfolders, and `root` itself if that leaves it empty.
+
+    Only ever calls `rmdir`, so a folder holding any file is left alone. Used
+    after files are moved out to a different output directory.
+    """
+    for d in sorted((p for p in root.rglob("*") if p.is_dir()), reverse=True):
+        try:
+            d.rmdir()
+        except OSError:
+            pass
+    try:
+        root.rmdir()
+    except OSError:
+        pass
+
+
 @dataclass
 class WatchConfig:
     watch_dir: Path
@@ -170,12 +187,14 @@ class DiscWatcher:
                 if out.renamed:
                     renamed += 1
                     if out.source != out.target:
-                        log.info("renamed %s -> %s", out.source.name, out.target.name)
+                        log.info("moved %s -> %s", out.source.name, out.target)
                 else:
                     log.warning("not renamed: %s (%s)", out.source.name, out.reason)
         else:
             for f in disc.identified:
-                log.info("[dry run] %s -> %s", f.path.name, f.target_name)
+                log.info("[dry run] %s -> %s", f.path.name, f.target_rel)
+        if renamed:
+            prune_empty_dirs(disc_dir)
         for f in disc.unidentified:
             why = f.error or (f.best and f"best S{f.best.season:02d}E{f.best.episode:02d} "
                                          f"p={f.best.score:.3f}") or "no match"

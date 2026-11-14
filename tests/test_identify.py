@@ -58,6 +58,15 @@ def test_identify_file(tmp_path, make_identifier):
     json.dumps(res.to_dict())  # fully serializable
 
 
+def test_sampling_never_stops_before_min_clips(tmp_path, make_identifier):
+    (video,) = touch(tmp_path, "title_t01.mkv")
+    seen = {}
+    for n in (1, 4):
+        res = make_identifier({"title_t01.mkv": (1, 3)}, min_clips=n).identify_file(video, SHOW)
+        seen[n] = res.clips_used
+    assert seen[1] >= 1 and seen[4] >= 4
+
+
 def test_unknown_content_is_uncertain(tmp_path, make_identifier):
     (video,) = touch(tmp_path, "extra.mkv")
     res = make_identifier({}).identify_file(video, SHOW)  # empty transcripts
@@ -100,8 +109,8 @@ def test_disc_guesses_show_from_folder_name(tmp_path, make_identifier, monkeypat
     disc_dir.mkdir()
     touch(disc_dir, "a.mkv", "b.mkv")
     ident = make_identifier({"a.mkv": (1, 1), "b.mkv": (1, 2)})
-    monkeypatch.setattr(ident_mod.imdb, "resolve_show_candidates",
-                        lambda name, year=None: [(SHOW.imdb_id, SHOW.title)])
+    monkeypatch.setattr(ident_mod.imdb, "resolve_show_hits",
+                        lambda name, year=None: [(SHOW.imdb_id, SHOW.title, None)])
     monkeypatch.setattr(ident_mod.audio, "probe_title", lambda p: None)
     disc = ident.identify_disc(disc_dir)
     assert disc.show == SHOW and len(disc.identified) == 2
@@ -110,7 +119,7 @@ def test_disc_guesses_show_from_folder_name(tmp_path, make_identifier, monkeypat
 def test_disc_no_show_raises(tmp_path, make_identifier, monkeypatch):
     touch(tmp_path, "a.mkv")
     ident = make_identifier({})
-    monkeypatch.setattr(ident_mod.imdb, "resolve_show_candidates", lambda n, y=None: [])
+    monkeypatch.setattr(ident_mod.imdb, "resolve_show_hits", lambda n, y=None: [])
     monkeypatch.setattr(ident_mod.audio, "probe_title", lambda p: None)
     with pytest.raises(ShowNotFoundError):
         ident.identify_disc(tmp_path)
@@ -137,6 +146,8 @@ def test_config_validation():
         IdentifierConfig(order="dvd")
     with pytest.raises(ValueError):
         IdentifierConfig(min_score=1.5)
+    with pytest.raises(ValueError):
+        IdentifierConfig(min_clips=0)
 
 
 def test_remote_stt_configured_never_loads_local_whisper(monkeypatch):
@@ -147,3 +158,15 @@ def test_remote_stt_configured_never_loads_local_whisper(monkeypatch):
     assert ident.device == "remote"
     assert ident._remote.model == "Systran/faster-whisper-medium"
     assert ident._remote.url == "http://stt:8000/v1/audio/transcriptions"
+
+
+def test_template_and_output_dir_set_target(tmp_path, make_identifier):
+    (video,) = touch(tmp_path, "title_t01.mkv")
+    out = tmp_path / "library"
+    res = make_identifier(
+        {"title_t01.mkv": (1, 3)}, output_dir=out,
+        template="{{ show }}/Season {{ season|pad }}/{{ code }}{{ ext }}",
+    ).identify_file(video, SHOW)
+    assert res.target_rel == "Test Show/Season 01/S01E03.mkv"
+    assert res.target_path == out / "Test Show" / "Season 01" / "S01E03.mkv"
+    assert apply_rename(res).renamed and res.target_path.exists() and not video.exists()

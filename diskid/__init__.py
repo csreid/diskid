@@ -32,6 +32,7 @@ from .identify import (
     episode_filename,
 )
 from .imdb import parse_title_year
+from .layout import DEFAULT_TEMPLATE, LIBRARY_TEMPLATE, TemplateError
 from .match import ConsensusScore
 
 try:
@@ -55,4 +56,7 @@ __all__ = [
     "apply_renames",
     "episode_filename",
     "parse_title_year",
+    "DEFAULT_TEMPLATE",
+    "LIBRARY_TEMPLATE",
+    "TemplateError",
 ]
