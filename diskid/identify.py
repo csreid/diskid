@@ -468,12 +468,14 @@ class Identifier:
         self,
         directory: str | Path,
         show: Show | str | None = None,
+        *,
+        hint: str | None = None,
     ) -> DiscResult:
         """Identify every file under `directory` (recursively).
 
         Files are assigned *distinct* episodes: a disc never holds the same
         episode twice, so when two files claim one, only the more confident
-        keeps it. If `show` is omitted it is guessed from the folder name
+        keeps it. If `show` is omitted it is guessed from `hint` (default: the folder name)
         ('Title (Year)') and container title tags; raises `ShowNotFoundError`
         if no file allows that. Every file is attempted -- non-video files
         come back as status "failed".
@@ -483,7 +485,7 @@ class Identifier:
             raise NotADirectoryError(directory)
         files = sorted(p for p in directory.rglob("*") if p.is_file())
         data = self._load_show(show) if show is not None else None
-        hint = directory.resolve().name
+        hint = hint or directory.resolve().name
 
         raws: list[_Raw] = []
         for video in files:

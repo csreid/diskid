@@ -153,6 +153,14 @@ identified, and discs whose show can't be determined (movies, unknown shows),
 are left untouched. A disc is processed once; it is reprocessed only if its file
 list or sizes change. Use `--dry-run` first to see what it would do.
 
+### Show names when ARM identification is off
+
+With `GET_VIDEO_TITLE: false`, ARM names folders `None (None)`. Pass `--arm-db
+/path/to/arm.db` (or `$DISKID_ARM_DB`) and `watch` looks up the disc's volume
+label in ARM's database (read-only, newest job for that folder), strips
+`Season N`/`Disc N`, and uses the rest as the show name. Without a hint the show is
+guessed from the folder name and the container title tag.
+
 ### Plans and the event log
 
 Everything is kept under the state directory (`$STATE_DIRECTORY`, else

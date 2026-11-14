@@ -219,6 +219,7 @@ def cmd_watch(args) -> int:
     watcher = DiscWatcher(ident, WatchConfig(
         watch_dir=args.dir, state_dir=args.state_dir or default_state_dir(),
         interval=args.interval, settle=args.settle, dry_run=args.dry_run,
+        arm_db=args.arm_db,
     ))
 
     def on_signal(signum, _frame):
@@ -364,6 +365,12 @@ def main() -> None:
     p_watch.add_argument("--settle", type=float, default=120.0,
                          help="seconds a disc folder must be unmodified before it is "
                               "processed (default: 120)")
+    p_watch.add_argument("--arm-db", type=Path, metavar="FILE",
+                         default=Path(os.environ["DISKID_ARM_DB"])
+                         if os.environ.get("DISKID_ARM_DB") else None,
+                         help="ARM's arm.db: get each disc's show name from the volume label "
+                              "ARM recorded (useful when ARM's own identification is off and "
+                              "folders are named 'None (None)') (default: $DISKID_ARM_DB)")
     p_watch.add_argument("--state-dir", type=Path, default=None,
                          help="where state.json and reports/ go (default: $STATE_DIRECTORY "
                               "or ~/.local/state/diskid)")

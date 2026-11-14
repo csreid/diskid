@@ -175,3 +175,51 @@ def test_live_run_logs_events_and_prunes_empty_dirs(tmp_path):
         "Test Show - S01E01.mkv", "Test Show - S01E02.mkv"]
     assert not disc.exists()                       # emptied by the move, pruned
     assert [e["event"] for e in _events(tmp_path)].count("file_moved") == 2
+
+
+def test_clean_label():
+    from diskid.arm import clean_label
+    assert clean_label("Orange_is_the_New_Black_Season_1_Disc_1") == "Orange Is the New Black".replace("Is", "is")
+    assert clean_label("FIREFLY_D2") == "FIREFLY"
+    assert clean_label("THE_WIRE_S3_DISC_2") == "THE WIRE"
+    assert clean_label("Seinfeld Season 4") == "Seinfeld"
+    assert clean_label("HGG0NNM1") == "HGG0NNM1"
+    assert clean_label("Season_1") is None
+
+
+def test_label_lookup_uses_last_two_path_components(tmp_path):
+    import sqlite3
+    from diskid.arm import show_hint
+    db = tmp_path / "arm.db"
+    con = sqlite3.connect(db)
+    con.execute("create table job (job_id integer, label text, path text)")
+    con.executemany("insert into job values (?,?,?)", [
+        (1, "OLD_LABEL", "/home/arm/media/unidentified/None (None)"),
+        (2, "Orange_is_the_New_Black_Season_1_Disc_1", "/home/arm/media/unidentified/None (None)"),
+        (3, "MOVIE", "/home/arm/media/movies/None (None)"),
+    ])
+    con.commit(); con.close()
+    host = tmp_path / "srv" / "unidentified" / "None (None)"
+    assert show_hint(db, host) == "Orange is the New Black"       # newest job wins
+    assert show_hint(db, tmp_path / "srv" / "tv" / "X") is None
+    assert show_hint(tmp_path / "missing.db", host) is None
+
+
+def test_watch_passes_arm_hint(tmp_path):
+    import sqlite3
+    db = tmp_path / "arm.db"
+    con = sqlite3.connect(db)
+    con.execute("create table job (job_id integer, label text, path text)")
+    con.execute("insert into job values (1,'Test_Show_Season_1_Disc_2','/home/arm/media/completed/None (None)')")
+    con.commit(); con.close()
+
+    class Hinted(StubIdentifier):
+        def identify_disc(self, directory, show=None, hint=None):
+            self.hint = hint
+            return super().identify_disc(directory, show)
+
+    ident = Hinted()
+    watch, w = watcher(tmp_path, ident, dry_run=True, arm_db=db)
+    make_disc(watch, name="None (None)")
+    # the watch dir here is `completed`, matching the DB's tail
+    assert w.scan_once() == 1 and ident.hint == "Test Show"

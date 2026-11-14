@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import cache
+from . import arm, cache
 from .cache import default_state_dir  # noqa: F401  (re-exported)
 from .eventlog import EventLog
 from .identify import DiscResult, Identifier, ShowNotFoundError
@@ -86,6 +86,8 @@ class WatchConfig:
     """A disc must be unmodified this long before it is processed."""
     dry_run: bool = False
     """Identify and report, but never rename."""
+    arm_db: Path | None = None
+    """ARM's SQLite database; if set, a disc's show name hint comes from its label."""
 
 
 class DiscWatcher:
@@ -166,7 +168,11 @@ class DiscWatcher:
         """
         log.info("identifying %s", disc_dir.name)
         try:
-            disc = self.identifier.identify_disc(disc_dir)
+            hint = arm.show_hint(self.config.arm_db, disc_dir) if self.config.arm_db else None
+            if hint:
+                log.info("%s: show hint %r from ARM label", disc_dir.name, hint)
+            disc = (self.identifier.identify_disc(disc_dir, hint=hint) if hint
+                    else self.identifier.identify_disc(disc_dir))
         except ShowNotFoundError as e:
             log.warning("%s: %s (not a series, or not in the archive); leaving untouched",
                         disc_dir.name, e)
