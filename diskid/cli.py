@@ -402,8 +402,12 @@ def main() -> None:
     if args.command == "plans":
         sys.exit(cmd_plans(args))
     if args.command == "watch":
-        if not any(d.is_dir() for d in args.dir):
-            sys.exit(f"error: none of these directories exist: {' '.join(map(str, args.dir))}")
+        for d in args.dir:
+            if not d.is_dir():
+                logging.getLogger("diskid.watch").warning(
+                    "watch dir %s does not exist yet; will pick it up when it appears", d)
+        if args.output_dir is None and all(not d.exists() for d in args.dir):
+            log("note: no watch directory exists yet")
         if not args.zip.is_file():
             sys.exit(f"error: no such file: {args.zip}")
         sys.exit(cmd_watch(args))
