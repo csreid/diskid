@@ -10,7 +10,7 @@ Type=simple
 User=arm
 Group=arm
 EnvironmentFile=/etc/diskid/diskid.env
-ExecStart=/opt/diskid/.venv/bin/diskid watch ${DISKID_WATCH_DIR} $DISKID_ARGS
+ExecStart=/opt/diskid/.venv/bin/diskid watch $DISKID_WATCH_DIR $DISKID_ARGS
 Restart=on-failure
 RestartSec=30
 

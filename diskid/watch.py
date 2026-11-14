@@ -78,7 +78,10 @@ def prune_empty_dirs(root: Path) -> None:
 
 @dataclass
 class WatchConfig:
-    watch_dir: Path
+    watch_dir: Path | list[Path]
+    """Folder(s) whose immediate subfolders are discs. ARM writes
+    `<COMPLETED_PATH>/<type>/<title>/`, so for ARM watch `<COMPLETED_PATH>/tv` and
+    `<COMPLETED_PATH>/unidentified`. A folder that doesn't exist yet is skipped."""
     state_dir: Path
     interval: float = 30.0
     """Seconds between scans."""
@@ -88,6 +91,11 @@ class WatchConfig:
     """Identify and report, but never rename."""
     arm_db: Path | None = None
     """ARM's SQLite database; if set, a disc's show name hint comes from its label."""
+
+    def __post_init__(self) -> None:
+        dirs = self.watch_dir if isinstance(self.watch_dir, list) else [self.watch_dir]
+        self.roots: list[Path] = [Path(d) for d in dirs]
+        self.watch_dir = self.roots[0]
 
 
 class DiscWatcher:
@@ -138,12 +146,21 @@ class DiscWatcher:
 
     # -- work ------------------------------------------------------------
 
+    def _disc_dirs(self) -> list[Path]:
+        found: list[Path] = []
+        for root in self.config.roots:
+            try:
+                found += [p for p in root.iterdir()
+                          if p.is_dir() and not p.name.startswith(".")]
+            except FileNotFoundError:
+                continue  # e.g. ARM hasn't created <staging>/tv yet
+        return sorted(found)
+
     def pending(self, now: float | None = None) -> list[Path]:
         """Disc folders that are settled and new/changed since last processed."""
         now = time.time() if now is None else now
         out = []
-        for d in sorted(p for p in self.config.watch_dir.iterdir()
-                        if p.is_dir() and not p.name.startswith(".")):
+        for d in self._disc_dirs():
             key = str(d)
             if self._retry_after.get(key, 0) > now:
                 continue
@@ -243,15 +260,13 @@ class DiscWatcher:
         return n
 
     def run_forever(self) -> None:
-        log.info("watching %s (every %.0fs, settle %.0fs%s)", self.config.watch_dir,
+        log.info("watching %s (every %.0fs, settle %.0fs%s)",
+                 ", ".join(map(str, self.config.roots)),
                  self.config.interval, self.config.settle,
                  ", DRY RUN" if self.config.dry_run else "")
         try:
             while not self._stop:
-                try:
-                    self.scan_once()
-                except FileNotFoundError:
-                    log.warning("watch dir %s is missing; waiting", self.config.watch_dir)
+                self.scan_once()
                 end = time.monotonic() + self.config.interval
                 while not self._stop and time.monotonic() < end:
                     time.sleep(min(1.0, self.config.interval))

@@ -211,8 +211,9 @@ def cmd_watch(args) -> int:
     from .watch import DiscWatcher, WatchConfig, default_state_dir
 
     out = args.output_dir
-    if out is not None and (out.resolve() == args.dir.resolve()
-                            or args.dir.resolve() in out.resolve().parents):
+    if out is not None and any(
+            out.resolve() == d.resolve() or d.resolve() in out.resolve().parents
+            for d in args.dir):
         sys.exit("error: --output-dir must not be inside the watched directory "
                  "(its contents would be scanned as discs)")
     ident = make_identifier(args, quiet=True)
@@ -357,7 +358,9 @@ def main() -> None:
     p_watch = sub.add_parser(
         "watch", help="watch a directory of ripped discs (e.g. ARM's COMPLETED_PATH), "
                       "identify new ones, and rename/move them per --template")
-    p_watch.add_argument("dir", type=Path)
+    p_watch.add_argument("dir", type=Path, nargs="+",
+                         help="folder(s) whose subfolders are discs; with ARM's staging layout "
+                              "pass <staging>/tv and <staging>/unidentified")
     p_watch.add_argument("--dry-run", action="store_true",
                          help="identify and write reports, but never rename")
     p_watch.add_argument("--interval", type=float, default=30.0,
@@ -399,8 +402,8 @@ def main() -> None:
     if args.command == "plans":
         sys.exit(cmd_plans(args))
     if args.command == "watch":
-        if not args.dir.is_dir():
-            sys.exit(f"error: no such directory: {args.dir}")
+        if not any(d.is_dir() for d in args.dir):
+            sys.exit(f"error: none of these directories exist: {' '.join(map(str, args.dir))}")
         if not args.zip.is_file():
             sys.exit(f"error: no such file: {args.zip}")
         sys.exit(cmd_watch(args))

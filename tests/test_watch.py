@@ -223,3 +223,13 @@ def test_watch_passes_arm_hint(tmp_path):
     make_disc(watch, name="None (None)")
     # the watch dir here is `completed`, matching the DB's tail
     assert w.scan_once() == 1 and ident.hint == "Test Show"
+
+
+def test_watches_several_roots_and_skips_missing_ones(tmp_path):
+    ident = StubIdentifier()
+    tv, un, missing = tmp_path / "tv", tmp_path / "unidentified", tmp_path / "movies"
+    tv.mkdir(); un.mkdir()
+    make_disc(tv, name="Show A (2020)")
+    make_disc(un, name="None (None)")
+    w = DiscWatcher(ident, WatchConfig([tv, un, missing], tmp_path / "state", settle=60))
+    assert w.scan_once() == 2 and len(ident.calls) == 2

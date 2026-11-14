@@ -143,7 +143,10 @@ stripped so a title can't create folders; unknown variables, absolute paths and
 
 ## Running as a service (Raspberry Pi / ARM)
 
-`diskid watch DIR` polls ARM's `COMPLETED_PATH`. Each subfolder is one disc
+`diskid watch DIR [DIR...]` polls folders of discs. ARM writes `<COMPLETED_PATH>/<type>/<title>/`
+(`tv/`, `movies/`, `unidentified/`), so point ARM's `COMPLETED_PATH` at a staging folder on the
+same filesystem as your library and watch `<staging>/tv` and `<staging>/unidentified`; moves
+into the library are then instant renames. Each subfolder of a watched folder is one disc
 (`Title (Year)/title_tNN.mkv`); once a disc has been unmodified for `--settle`
 seconds (default 120) it is identified and its confidently identified files
 are renamed in place, or moved into `--output-dir` per `--template` (never
