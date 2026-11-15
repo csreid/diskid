@@ -34,20 +34,31 @@ def clean_label(label: str) -> str | None:
     return text or None
 
 
-def label_for(db_path: Path, disc_dir: Path) -> str | None:
-    """The ARM disc label for the job that produced `disc_dir`, if any."""
+def job_for(db_path: Path, disc_dir: Path) -> dict | None:
+    """The newest ARM job whose output folder is `disc_dir`: label, title, imdb_id, video_type."""
     tail = f"%/{disc_dir.parent.name}/{disc_dir.name}"
     try:
         con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
+        con.row_factory = sqlite3.Row
         try:
+            cols = {r[1] for r in con.execute("PRAGMA table_info(job)")}
+            want = [c for c in ("label", "title", "imdb_id", "video_type") if c in cols]
+            if not want:
+                return None
             row = con.execute(
-                "SELECT label FROM job WHERE path LIKE ? AND label IS NOT NULL "
+                f"SELECT {', '.join(want)} FROM job WHERE path LIKE ? "
                 "ORDER BY job_id DESC LIMIT 1", (tail,)).fetchone()
         finally:
             con.close()
     except sqlite3.Error:
         return None
-    return row[0] if row else None
+    return dict(row) if row else None
+
+
+def label_for(db_path: Path, disc_dir: Path) -> str | None:
+    """The ARM disc label for the job that produced `disc_dir`, if any."""
+    job = job_for(db_path, disc_dir)
+    return job.get("label") if job else None
 
 
 def show_hint(db_path: Path, disc_dir: Path) -> str | None:

@@ -16,11 +16,11 @@ import hashlib
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import arm, cache
+from . import arm, audio, cache, tmdb, triage
 from .cache import default_state_dir  # noqa: F401  (re-exported)
 from .eventlog import EventLog
 from .identify import DiscResult, Identifier, ShowNotFoundError
@@ -91,11 +91,18 @@ class WatchConfig:
     """Identify and report, but never rename."""
     arm_db: Path | None = None
     """ARM's SQLite database; if set, a disc's show name hint comes from its label."""
+    triage_dirs: list[Path] = field(default_factory=list)
+    """Folders of discs ARM filed as *movies* (e.g. `<staging>/movies`). Each disc is
+    checked first (see `diskid.triage`): only those that are really TV discs are
+    identified; the rest are left untouched."""
+    tmdb_api_key: str | None = None
+    """For the claimed film's runtime; None falls back to $TMDB_APIKEY."""
 
     def __post_init__(self) -> None:
         dirs = self.watch_dir if isinstance(self.watch_dir, list) else [self.watch_dir]
         self.roots: list[Path] = [Path(d) for d in dirs]
-        self.watch_dir = self.roots[0]
+        self.watch_dir = self.roots[0] if self.roots else Path(".")
+        self.triage_dirs = [Path(d) for d in self.triage_dirs]
 
 
 class DiscWatcher:
@@ -148,7 +155,7 @@ class DiscWatcher:
 
     def _disc_dirs(self) -> list[Path]:
         found: list[Path] = []
-        for root in self.config.roots:
+        for root in [*self.config.roots, *self.config.triage_dirs]:
             try:
                 found += [p for p in root.iterdir()
                           if p.is_dir() and not p.name.startswith(".")]
@@ -176,13 +183,42 @@ class DiscWatcher:
             out.append(d)
         return out
 
+    def _triage(self, disc_dir: Path) -> triage.Verdict:
+        """Is a disc ARM filed as a movie really a TV disc? Probes durations only."""
+        durations = []
+        for f in _files(disc_dir):
+            try:
+                durations.append(audio.probe_duration(f))
+            except Exception:  # not video / unreadable: ignore for classification
+                continue
+        claimed = None
+        job = arm.job_for(self.config.arm_db, disc_dir) if self.config.arm_db else None
+        key = self.config.tmdb_api_key or tmdb.api_key()
+        if job and job.get("imdb_id") and key:
+            claimed = tmdb.movie_runtime(key, str(job["imdb_id"]))
+        return triage.classify(durations, claimed)
+
     def process_disc(self, disc_dir: Path) -> DiscResult | None:
         """Identify (and unless dry-run, move) one disc; records state.
+
+        Discs under a triage folder are first classified; only TV ones go on.
 
         Every disc that gets a show is saved as a plan (`<state>/plans/`), dry
         run or not, so `diskid apply <id>` can carry it out later without
         re-running identification.
         """
+        if disc_dir.parent in self.config.triage_dirs:
+            verdict = self._triage(disc_dir)
+            self.events.write("disc_triaged", disc=str(disc_dir), verdict=verdict.kind,
+                              reason=verdict.reason)
+            if verdict.kind != "tv":
+                log.info("%s: %s (%s); leaving untouched", disc_dir.name, verdict.kind,
+                         verdict.reason)
+                if verdict.kind == "review":
+                    log.warning("%s: needs a look: %s", disc_dir.name, verdict.reason)
+                self._record(disc_dir, outcome=f"triage_{verdict.kind}")
+                return None
+            log.info("%s: looks like a TV disc, not a movie (%s)", disc_dir.name, verdict.reason)
         log.info("identifying %s", disc_dir.name)
         try:
             hint = arm.show_hint(self.config.arm_db, disc_dir) if self.config.arm_db else None

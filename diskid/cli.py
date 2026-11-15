@@ -213,14 +213,14 @@ def cmd_watch(args) -> int:
     out = args.output_dir
     if out is not None and any(
             out.resolve() == d.resolve() or d.resolve() in out.resolve().parents
-            for d in args.dir):
+            for d in [*args.dir, *args.triage]):
         sys.exit("error: --output-dir must not be inside the watched directory "
                  "(its contents would be scanned as discs)")
     ident = make_identifier(args, quiet=True)
     watcher = DiscWatcher(ident, WatchConfig(
         watch_dir=args.dir, state_dir=args.state_dir or default_state_dir(),
         interval=args.interval, settle=args.settle, dry_run=args.dry_run,
-        arm_db=args.arm_db,
+        arm_db=args.arm_db, triage_dirs=args.triage,
     ))
 
     def on_signal(signum, _frame):
@@ -374,6 +374,13 @@ def main() -> None:
                          help="ARM's arm.db: get each disc's show name from the volume label "
                               "ARM recorded (useful when ARM's own identification is off and "
                               "folders are named 'None (None)') (default: $DISKID_ARM_DB)")
+    p_watch.add_argument("--triage", type=Path, action="append", metavar="DIR",
+                         default=[Path(p) for p in os.environ.get("DISKID_TRIAGE_DIR", "").split()],
+                         help="a folder of discs ARM filed as movies (e.g. <staging>/movies): "
+                              "each is checked, and only TV-shaped ones (several similar-length "
+                              "files, or a runtime that doesn't fit the claimed film) are "
+                              "identified as a series; movies are left alone. Repeatable "
+                              "(default: $DISKID_TRIAGE_DIR)")
     p_watch.add_argument("--state-dir", type=Path, default=None,
                          help="where state.json and reports/ go (default: $STATE_DIRECTORY "
                               "or ~/.local/state/diskid)")

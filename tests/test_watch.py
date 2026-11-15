@@ -233,3 +233,38 @@ def test_watches_several_roots_and_skips_missing_ones(tmp_path):
     make_disc(un, name="None (None)")
     w = DiscWatcher(ident, WatchConfig([tv, un, missing], tmp_path / "state", settle=60))
     assert w.scan_once() == 2 and len(ident.calls) == 2
+
+
+def test_classify_cases():
+    from diskid.triage import classify
+    m = 60
+    assert classify([142 * m, 44 * m, 20 * m, 9 * m], claimed_runtime_min=145).kind == "movie"
+    assert classify([142 * m, 44 * m, 20 * m, 9 * m]).kind == "movie"        # feature, no claim
+    assert classify([93 * m]).kind == "movie"                                  # single title
+    eps = [22 * m, 21.5 * m, 22 * m, 21 * m, 22 * m, 12 * m, 5 * m]
+    assert classify(eps, claimed_runtime_min=85).kind == "tv"                  # the 30 Rock disc
+    assert classify(eps).kind == "tv"                                          # even with no claim
+    assert classify([22 * m, 43 * m], claimed_runtime_min=85).kind == "review"  # off, not episodic
+    assert classify([22 * m, 22 * m, 22 * m], claimed_runtime_min=22).kind == "movie"  # claim fits
+    assert classify([]).kind == "movie"
+
+
+def test_triage_dir_only_tv_shaped_discs_proceed(tmp_path, monkeypatch):
+    import diskid.watch as watch_mod
+    durations = {}
+    monkeypatch.setattr(watch_mod.audio, "probe_duration", lambda p: durations[p.parent.name][p.name])
+    movies = tmp_path / "movies"
+    movies.mkdir()
+    tv_disc = make_disc(movies, name="Barbie (2015)", files=("a.mkv", "b.mkv", "c.mkv", "d.mkv"))
+    film = make_disc(movies, name="Big Film (1999)", files=("main.mkv", "extra.mkv"))
+    durations["Barbie (2015)"] = {n: 1320.0 for n in ("a.mkv", "b.mkv", "c.mkv", "d.mkv")}
+    durations["Big Film (1999)"] = {"main.mkv": 7200.0, "extra.mkv": 600.0}
+    ident = StubIdentifier()
+    w = DiscWatcher(ident, WatchConfig([], tmp_path / "state", settle=60, dry_run=True,
+                                       triage_dirs=[movies]))
+    assert w.scan_once() == 1
+    assert ident.calls == [tv_disc]                       # only the TV-shaped disc
+    assert w._state[str(film)]["outcome"] == "triage_movie"
+    assert w.scan_once() == 0 and len(ident.calls) == 1   # neither is retried
+    kinds = [(e["event"], e.get("verdict")) for e in _events(tmp_path)]
+    assert ("disc_triaged", "tv") in kinds and ("disc_triaged", "movie") in kinds

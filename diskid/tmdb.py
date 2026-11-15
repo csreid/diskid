@@ -84,3 +84,15 @@ class EpisodeMapper:
                   file=sys.stderr)
         self._cache[episode_imdb_id] = result
         return result
+
+
+def movie_runtime(key: str, imdb_tt: str) -> int | None:
+    """Runtime in minutes of the movie with this IMDb id (e.g. 'tt0116629'), or None."""
+    try:
+        found = _get(f"/find/{imdb_tt}", key, external_source="imdb_id")
+        movies = found.get("movie_results", [])
+        if not movies:
+            return None
+        return _get(f"/movie/{movies[0]['id']}", key).get("runtime") or None
+    except OSError:
+        return None
