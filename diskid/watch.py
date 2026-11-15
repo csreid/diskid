@@ -296,8 +296,10 @@ class DiscWatcher:
         return n
 
     def run_forever(self) -> None:
-        log.info("watching %s (every %.0fs, settle %.0fs%s)",
-                 ", ".join(map(str, self.config.roots)),
+        triage_note = (f"; triaging {', '.join(map(str, self.config.triage_dirs))}"
+                       if self.config.triage_dirs else "")
+        log.info("watching %s%s (every %.0fs, settle %.0fs%s)",
+                 ", ".join(map(str, self.config.roots)), triage_note,
                  self.config.interval, self.config.settle,
                  ", DRY RUN" if self.config.dry_run else "")
         try:
