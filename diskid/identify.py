@@ -41,7 +41,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-from . import audio, imdb, layout, stt, subdb, tmdb
+from . import audio, calibration, imdb, layout, stt, subdb, tmdb
 from .match import (
     STT_ERROR_RATE,
     BayesianIdentifier,
@@ -112,6 +112,10 @@ class IdentifierConfig:
     stt_api_key: str | None = None
     stt_timeout: float = 120.0
     """Seconds to wait for one clip's transcription."""
+    calibration_log: Path | None = None
+    """If set, append one JSON line per identified file (clip transcripts, per-clip
+    posterior, final ranking, the model constants) so the constants can be refit
+    offline; see `diskid.calibration`. None: record nothing."""
 
     def __post_init__(self) -> None:
         if self.order not in ("tmdb", "imdb"):
@@ -189,6 +193,8 @@ class FileResult:
     """`target_path` relative to its base, e.g. 'Show (2020)/Season 01/Show - S01E02.mkv'."""
     warnings: list[str] = field(default_factory=list)
     error: str | None = None
+    calibration_id: str | None = None
+    """Id of this file's record in the calibration log (None when not recording)."""
 
     @property
     def identified(self) -> bool:
@@ -378,6 +384,7 @@ class _Raw:
     duration: float | None = None
     error: str | None = None
     data: _ShowData | None = None
+    calibration_id: str | None = None
 
 
 class Identifier:
@@ -579,7 +586,31 @@ class Identifier:
         raw.ranked = ident.ranked()
         raw.null_probability = ident.null_probability()
         raw.clips_used = ident.n_clips
+        raw.calibration_id = self._record_calibration(raw, ident)
         return raw
+
+    def _record_calibration(self, raw: _Raw, ident: BayesianIdentifier) -> str | None:
+        """Append this file's observations to the calibration log; returns the record id."""
+        if self.config.calibration_log is None or raw.data is None:
+            return None
+        cfg = self.config
+        try:
+            size = raw.path.stat().st_size
+        except OSError:
+            size = None
+        rec_id = calibration.new_id()
+        calibration.log(cfg.calibration_log).write(
+            "observation", id=rec_id, show=raw.data.show.title, show_imdb=raw.data.show.imdb_tt,
+            file=str(raw.path), size=size, duration=raw.duration,
+            config=dict(eps=cfg.eps, clip_duration=cfg.clip_duration, min_score=cfg.min_score,
+                        min_clips=cfg.min_clips, max_clips=cfg.max_clips,
+                        stt_model=cfg.stt_model or cfg.model, remote_stt=bool(cfg.stt_url)),
+            constants=calibration.model_constants(),
+            clips=ident.trace,
+            ranked=[[c.season, c.episode, round(c.score, 6)] for c in raw.ranked[:5]],
+            null=raw.null_probability, n_clips=raw.clips_used,
+        )
+        return rec_id
 
     def _guess_show(
         self, video: Path, total: float, hint: str,
@@ -668,6 +699,7 @@ class Identifier:
             null_probability=raw.null_probability,
             clips_used=raw.clips_used,
             duration=raw.duration,
+            calibration_id=raw.calibration_id,
         )
         if raw.error is not None:
             return FileResult(status="failed", error=raw.error, **common)

@@ -178,6 +178,14 @@ Everything is kept under the state directory (`$STATE_DIRECTORY`, else
 - `events.jsonl`: append-only, one JSON object per line (`disc_processed`,
   `disc_no_show`, `disc_error`, `file_moved`, `file_not_moved`, `plan_applied`),
   e.g. `jq 'select(.event=="file_not_moved")' events.jsonl`.
+- `calibration.jsonl`: for fitting the model's hand-picked constants. Each identified
+  file appends an `observation` (clip transcripts, capture times, per-clip posterior,
+  final ranking, the constants in force); applying a plan appends a `label`
+  (`plan_applied`: weak ground truth, since it only confirms the model's own confident
+  answers). Transcripts are of your media, so keep this file private. Turn it off with
+  `--no-calibration-log`; `DISKID_CALIBRATION_LOG` overrides the path.
+  `diskid label <observation-id> S02E06` records a hand-checked answer (IMDb numbering) that
+  outranks `plan_applied`.
 - `reports/`: the full `DiscResult` with candidate rankings, for reviewing misses.
 - `state.json`: which discs are done (note: a dry-run disc counts as done, so
   leaving `--dry-run` won't redo it; `diskid apply` its plan instead).

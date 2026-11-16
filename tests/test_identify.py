@@ -170,3 +170,21 @@ def test_template_and_output_dir_set_target(tmp_path, make_identifier):
     assert res.target_rel == "Test Show/Season 01/S01E03.mkv"
     assert res.target_path == out / "Test Show" / "Season 01" / "S01E03.mkv"
     assert apply_rename(res).renamed and res.target_path.exists() and not video.exists()
+
+
+def test_calibration_log_records_clips_and_links_the_result(tmp_path, make_identifier):
+    (video,) = touch(tmp_path, "title_t01.mkv")
+    log = tmp_path / "calibration.jsonl"
+    res = make_identifier({"title_t01.mkv": (1, 3)}, calibration_log=log).identify_file(video, SHOW)
+    (rec,) = [json.loads(line) for line in log.read_text().splitlines()]
+    assert rec["event"] == "observation" and rec["id"] == res.calibration_id
+    assert rec["show_imdb"] == SHOW.imdb_tt and rec["duration"] == 1500.0
+    assert len(rec["clips"]) == res.clips_used and rec["clips"][0]["text"]
+    assert rec["ranked"][0][:2] == [1, 3] and rec["constants"]["TEXT_LLR_CAP"] > 0
+    assert rec["config"]["min_clips"] == 3
+
+
+def test_no_calibration_log_by_default(tmp_path, make_identifier):
+    (video,) = touch(tmp_path, "title_t01.mkv")
+    res = make_identifier({"title_t01.mkv": (1, 3)}).identify_file(video, SHOW)
+    assert res.calibration_id is None

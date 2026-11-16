@@ -327,10 +327,14 @@ class BayesianIdentifier:
             for key, files in docs.items()
         }
         self.n_clips = 0
+        self.trace: list[dict] = []
+        """One entry per `observe` call (incl. empty transcripts): capture time,
+        transcript, and the top episode/null posterior right after. For calibration."""
 
     def observe(self, capture_time: float, clip_text: str) -> None:
         """Update the posterior with one (capture offset, transcript) observation."""
         if not clip_text.strip():
+            self.trace.append({"t": capture_time, "text": clip_text, "top": None})
             return
         self.n_clips += 1
         clip_words = _normalize(clip_text)
@@ -364,6 +368,14 @@ class BayesianIdentifier:
             step_llr = _logsumexp(log_prior_belief + obs_llr)
             belief.llr += step_llr
             belief.log_belief = log_prior_belief + obs_llr
+
+        top = self.ranked()[0] if self.beliefs else None
+        self.trace.append({
+            "t": capture_time, "text": clip_text,
+            "top": [top.season, top.episode, round(top.score, 6)] if top else None,
+            "offset": top.offset if top else None,
+            "null": round(self.null_probability(), 6),
+        })
 
     def _posterior(self) -> dict[EpisodeKey, float]:
         log_unnorm = {key: self.log_prior[key] + b.llr for key, b in self.beliefs.items()}

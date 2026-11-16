@@ -15,12 +15,13 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 
 from tqdm import tqdm
 
-from . import cache, layout, match, subdb
+from . import cache, calibration, layout, match, subdb
 from .identify import (  # noqa: F401  (re-exported for existing importers)
     DiscResult,
     FileResult,
@@ -52,6 +53,17 @@ def ranked_json(ranked: list[ConsensusScore], top: int = 10) -> list[dict]:
     return [vars(ep) for ep in ranked[:top]]
 
 
+def calibration_path(args) -> Path | None:
+    """Where to record calibration data (None with --no-calibration-log)."""
+    if getattr(args, "no_calibration_log", False):
+        return None
+    env = os.environ.get("DISKID_CALIBRATION_LOG")
+    if env:
+        return Path(env)
+    state = getattr(args, "state_dir", None) or cache.default_state_dir()
+    return calibration.default_path(state)
+
+
 def make_identifier(args, quiet: bool = False) -> Identifier:
     """Build an Identifier from parsed CLI args, with tqdm/stderr progress."""
     config = IdentifierConfig(
@@ -61,6 +73,7 @@ def make_identifier(args, quiet: bool = False) -> Identifier:
         order=args.order, zip_path=args.zip,
         stt_url=args.stt_url, stt_model=args.stt_model,
         stt_api_key=os.environ.get("DISKID_STT_API_KEY"), stt_timeout=args.stt_timeout,
+        calibration_log=calibration_path(args),
     )
     state: dict = {"bar": None}
 
@@ -250,7 +263,7 @@ def cmd_apply(args) -> int:
         if plan.get("applied"):
             log(f"note: plan {plan['id']} was already applied at {plan['applied']['at']}; "
                 "retrying any entries still unmoved")
-        results = cache.apply_plan(plan, events)
+        results = cache.apply_plan(plan, events, calibration.default_path(cache.default_state_dir()))
         ok = ok and all(r["renamed"] for r in results
                         if any(e["file"] == r["file"] and e.get("confident") for e in plan["entries"]))
         if args.json:
@@ -278,6 +291,28 @@ def cmd_plans(args) -> int:
         state = f"applied {p['applied']['at']}" if p.get("applied") else "PENDING"
         print(f"{p['id']}  {p['created']}  {p['command']:<13} {p['show'] or '?':<28} "
               f"{n_ok}/{len(p['entries'])} identified  {state}")
+    return 0
+
+
+def cmd_label(args) -> int:
+    """Record by hand which episode a calibration observation really is."""
+    m = re.fullmatch(r"[Ss](\d+)[Ee](\d+)", args.episode)
+    if not m:
+        sys.exit(f"error: episode must look like S02E06, not {args.episode!r}")
+    path = calibration_path(args)
+    known = set()
+    if path and path.is_file():
+        for line in path.read_text().splitlines():
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if rec.get("event") == "observation":
+                known.add(rec["id"])
+    if args.id not in known:
+        sys.exit(f"error: no observation {args.id!r} in {path}")
+    calibration.write_label(path, args.id, (int(m[1]), int(m[2])), "manual")
+    print(f"labelled {args.id} = S{int(m[1]):02d}E{int(m[2]):02d} (IMDb numbering)")
     return 0
 
 
@@ -334,6 +369,10 @@ def main() -> None:
                        help="episode numbering for filenames: tmdb (Jellyfin's "
                             "default metadata source) or imdb (the archive's "
                             "aired order) (default: tmdb)")
+        p.add_argument("--no-calibration-log", action="store_true",
+                       help="don't record clip transcripts and posteriors to "
+                            "<state>/calibration.jsonl (env DISKID_CALIBRATION_LOG "
+                            "overrides the path)")
         p.add_argument("--zip", type=Path, default=subdb.DEFAULT_ZIP,
                        help=f"OPUS raw subtitle archive (default: {subdb.DEFAULT_ZIP})")
         p.add_argument("--min-score", type=float, default=0.99,
@@ -392,6 +431,12 @@ def main() -> None:
                          help="plan id (see `diskid plans`) or path to a plan .json")
     p_apply.add_argument("--json", action="store_true", help="machine-readable output on stdout")
 
+    p_label = sub.add_parser("label", help="record the true episode of a calibration observation "
+                                           "(strong ground truth; see `calibration.jsonl`)")
+    p_label.add_argument("id", help="observation id from calibration.jsonl")
+    p_label.add_argument("episode", help="e.g. S02E06, in IMDb (aired-order) numbering")
+    p_label.add_argument("--state-dir", type=Path, default=None)
+
     p_plans = sub.add_parser("plans", help="list saved plans and whether they were applied")
     p_plans.add_argument("--json", action="store_true", help="machine-readable output on stdout")
 
@@ -418,6 +463,9 @@ def main() -> None:
         if not args.zip.is_file():
             sys.exit(f"error: no such file: {args.zip}")
         sys.exit(cmd_watch(args))
+
+    if args.command == "label":
+        sys.exit(cmd_label(args))
 
     target = args.video if args.command == "identify" else args.dir
     if not (target.is_file() if args.command == "identify" else target.is_dir()):

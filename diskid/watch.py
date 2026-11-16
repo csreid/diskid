@@ -250,7 +250,9 @@ class DiscWatcher:
         moved = 0
         if not self.config.dry_run:
             plan = cache.load_mapping(plan_id, self.config.state_dir)
-            for r in cache.apply_plan(plan, self.events):
+            for r in cache.apply_plan(plan, self.events,
+                                      getattr(getattr(self.identifier, "config", None),
+                                              "calibration_log", None)):
                 if r["renamed"]:
                     moved += 1
                     if r["file"] != r["target"]:

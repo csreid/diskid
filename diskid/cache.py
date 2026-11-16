@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import calibration
 from .eventlog import EventLog
 from .identify import rename_to_target
 
@@ -63,6 +64,9 @@ def entry_for(res: Any) -> dict:
         "best_guess": (f"S{res.best.season:02d}E{res.best.episode:02d}" if res.best else None),
         "best_score": res.best.score if res.best else None,
         "size": size,
+        "calibration_id": getattr(res, "calibration_id", None),
+        "imdb_episode": ([res.episode.imdb_season, res.episode.imdb_episode]
+                         if res.episode else None),
         "warnings": list(res.warnings),
         "error": res.error,
     }
@@ -122,10 +126,12 @@ def list_plans(state_dir: Path | None = None) -> list[dict]:
     return out
 
 
-def apply_plan(plan: dict, events: EventLog | None = None) -> list[dict]:
+def apply_plan(plan: dict, events: EventLog | None = None,
+               calibration_log: Path | None = None) -> list[dict]:
     """Carry out a plan's confident entries; record the outcome in the plan file.
 
-    Never overwrites; refuses a source whose size changed since planning.
+    Never overwrites; refuses a source whose size changed since planning. With
+    `calibration_log`, a moved file's observation is labelled "plan_applied".
     Returns one result dict per entry: file, target, renamed, reason.
     """
     events = events or EventLog(None)
@@ -140,6 +146,9 @@ def apply_plan(plan: dict, events: EventLog | None = None) -> list[dict]:
         else:
             new, reason = rename_to_target(file, target)
             renamed = new is not None
+        if renamed and e.get("calibration_id") and e.get("imdb_episode"):
+            calibration.write_label(calibration_log, e["calibration_id"],
+                                    tuple(e["imdb_episode"]), "plan_applied", plan=plan["id"])
         if e.get("confident"):
             events.write("file_moved" if renamed else "file_not_moved",
                          plan=plan["id"], source=str(file),
