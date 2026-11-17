@@ -132,11 +132,17 @@ def apply_plan(plan: dict, events: EventLog | None = None,
 
     Never overwrites; refuses a source whose size changed since planning. With
     `calibration_log`, a moved file's observation is labelled "plan_applied".
+    Entries an earlier apply already moved are skipped and keep their recorded result.
     Returns one result dict per entry: file, target, renamed, reason.
     """
     events = events or EventLog(None)
     results = []
+    # A retry must not forget (or re-log as failures) files an earlier run moved.
+    done = {r["file"]: r for r in (plan.get("applied") or {}).get("results", []) if r["renamed"]}
     for e in plan["entries"]:
+        if e["file"] in done:
+            results.append(done[e["file"]])
+            continue
         file = Path(e["file"])
         target = Path(e["target"]) if e.get("target") else None
         if not e.get("confident") or target is None:

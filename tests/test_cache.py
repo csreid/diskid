@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from diskid import cache
@@ -52,3 +53,23 @@ def test_rename_to_target_existing_target(tmp_path: Path):
     assert new_path is None
     assert reason == "target exists"
     assert src.exists()
+
+
+def test_reapplying_a_plan_keeps_the_record_of_files_already_moved(tmp_path):
+    from diskid.eventlog import EventLog
+    a, b = tmp_path / "a.mkv", tmp_path / "b.mkv"
+    a.write_bytes(b"x")
+    entries = [
+        {"file": str(a), "target": str(tmp_path / "A.mkv"), "confident": True, "size": 1},
+        {"file": str(b), "target": str(tmp_path / "B.mkv"), "confident": True, "size": 1},
+    ]
+    state = tmp_path / "state"
+    pid = cache.save_mapping("test", "Show", entries, state_dir=state)
+    events = EventLog(state / "events.jsonl")
+    cache.apply_plan(cache.load_mapping(pid, state), events)   # b is missing: not moved
+    b.write_bytes(b"x")
+    results = cache.apply_plan(cache.load_mapping(pid, state), events)  # retry
+    assert [r["renamed"] for r in results] == [True, True]
+    assert (tmp_path / "A.mkv").exists() and (tmp_path / "B.mkv").exists()
+    kinds = [json.loads(l)["event"] for l in (state / "events.jsonl").read_text().splitlines()]
+    assert kinds.count("file_moved") == 2 and kinds.count("file_not_moved") == 1

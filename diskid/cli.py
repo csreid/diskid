@@ -262,7 +262,7 @@ def cmd_apply(args) -> int:
             sys.exit(f"error: no such plan: {ref}")
         if plan.get("applied"):
             log(f"note: plan {plan['id']} was already applied at {plan['applied']['at']}; "
-                "retrying any entries still unmoved")
+                "retrying any entries still unmoved (already-moved files are left alone)")
         results = cache.apply_plan(plan, events, calibration.default_path(cache.default_state_dir()))
         ok = ok and all(r["renamed"] for r in results
                         if any(e["file"] == r["file"] and e.get("confident") for e in plan["entries"]))
