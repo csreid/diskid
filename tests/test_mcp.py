@@ -208,3 +208,14 @@ def test_queue_shows_disc_state(env, client):
     make_plan(tmp, state, [("a.mkv", True, 0.999)])
     text = call(client, "queue")
     assert "1 disc folder(s)" in text and "Disc" in text and "waiting" in text
+
+
+def test_a_rejected_request_logs_why_but_never_the_token(env, caplog):
+    _, _, ctx, _ = env
+    app = mcp_server.make_app(ctx, host="0.0.0.0", port=8765, token="s3cret-value")
+    with TestClient(app) as c, caplog.at_level("WARNING", logger="diskid.mcp"):
+        c.get("/")
+        c.post("/mcp", headers={"Authorization": "Bearer nope"}, json={})
+    text = caplog.text
+    assert "no Authorization header" in text and "does not match" in text
+    assert "s3cret-value" not in text and "nope" not in text

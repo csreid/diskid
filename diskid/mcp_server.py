@@ -227,6 +227,11 @@ class BearerAuth:
         ok = got[:7].lower() == b"bearer " and hmac.compare_digest(got[7:].strip(), self._token)
         if ok:
             return await self.app(scope, receive, send)
+        who = (scope.get("client") or ("?",))[0]
+        why = ("no Authorization header" if not got else
+               "Authorization is not a Bearer token" if got[:7].lower() != b"bearer " else
+               "bearer token does not match")
+        log.warning("401 for %s %s from %s: %s", scope.get("method"), scope.get("path"), who, why)
         await send({"type": "http.response.start", "status": 401,
                     "headers": [(b"content-type", b"text/plain"),
                                 (b"www-authenticate", b"Bearer")]})
