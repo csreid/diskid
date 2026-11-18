@@ -492,7 +492,7 @@ def main() -> None:
     p_plans.add_argument("--json", action="store_true", help="machine-readable output on stdout")
 
     args = parser.parse_args()
-    if args.command == "watch":
+    if args.command in ("watch", "mcp"):
         # journald adds timestamps; keep lines plain
         logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s",
                             stream=sys.stderr)

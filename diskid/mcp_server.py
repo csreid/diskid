@@ -72,6 +72,8 @@ def _safe(fn):
     """Tool errors come back as text the model can read and act on, not as exceptions."""
     @functools.wraps(fn)
     def wrapper(*a, **kw):
+        log.info("tool %s(%s)", fn.__name__,
+                 ", ".join([*(repr(x)[:60] for x in a), *(f"{k}={v!r}"[:60] for k, v in kw.items())]))
         try:
             return fn(*a, **kw)
         except queries.LookupFailed as e:
