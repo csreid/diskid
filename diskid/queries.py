@@ -123,11 +123,41 @@ def describe_uncertain(rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
+#: What the watcher's recorded outcomes mean, in words that can't be mistaken for a workflow step.
+_OUTCOME_WORDS = {
+    "triage_movie": "looks like a movie, not TV: left alone, nothing to do",
+    "triage_review": "could not tell movie from TV: left alone, needs a person to look",
+    "no_show": "could not work out which show this is: needs a person to say",
+}
+
+
 def _disc_state(state: dict, folder: Path) -> dict:
     return state.get(str(folder), {})
 
 
-def queue(state_dir: Path, folders: list[Path], arm_db: Path | None = None) -> str:
+def ready_to_apply(state_dir: Path, min_score: float, limit: int = 10) -> list[str]:
+    """Lines about plans that have files which could be moved right now (newest first).
+
+    Uses the same checks as `plan_moves`, so stale plans (sources gone, targets
+    already there) never show up.
+    """
+    lines = []
+    for plan in reversed(recent_plans(state_dir)):
+        info = plan_moves(plan, min_score)
+        n = len(info["moves"])
+        if info["blocked"]:
+            lines.append(f"  plan {plan['id']} ({plan['show']}): {len(info['blocked'])} file(s) "
+                         "score too low to apply; rerun them first")
+        elif n:
+            lines.append(f"  plan {plan['id']} ({plan['show']}): {n} file(s) ready "
+                         f"-> preview_apply('{plan['id']}')")
+        if len(lines) >= limit:
+            break
+    return lines
+
+
+def queue(state_dir: Path, folders: list[Path], arm_db: Path | None = None,
+          min_score: float = 0.99) -> str:
     """Disc folders on disk, each with its state, plus the latest ARM jobs."""
     try:
         state = json.loads((state_dir / "state.json").read_text())
@@ -149,16 +179,22 @@ def queue(state_dir: Path, folders: list[Path], arm_db: Path | None = None) -> s
             s = _disc_state(state, d)
             outcome = s.get("outcome")
             if outcome == "done":
-                what = f"{s.get('identified')}/{s.get('total')} identified, plan {s.get('plan')}"
+                what = f"checked: {s.get('identified')} of {s.get('total')} files identified (plan {s.get('plan')})"
                 if s.get("renamed"):
-                    what += f", {s['renamed']} moved"
+                    what += f", {s['renamed']} already moved"
+            elif outcome in _OUTCOME_WORDS:
+                what = _OUTCOME_WORDS[outcome]
             elif outcome:
                 what = outcome.replace("_", " ")
             else:
-                what = "waiting (not processed yet)"
+                what = "not processed yet (still being ripped, or settling)"
             lines.append(f"  [{root.name}] {d.name}  {n} files  {what}")
     head = [f"{len(lines)} disc folder(s) in staging:"] if lines else ["No disc folders in staging."]
     out = head + lines
+    ready = ready_to_apply(state_dir, min_score)
+    out.append("Ready to apply (identified files that can be moved into the library now):"
+               if ready else "Ready to apply: nothing. No plan has files waiting to be moved.")
+    out += ready
     if arm_db:
         jobs = arm.recent_jobs(arm_db, 3)
         if jobs:

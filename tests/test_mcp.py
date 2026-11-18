@@ -207,7 +207,7 @@ def test_queue_shows_disc_state(env, client):
     tmp, state, *_ = env
     make_plan(tmp, state, [("a.mkv", True, 0.999)])
     text = call(client, "queue")
-    assert "1 disc folder(s)" in text and "Disc" in text and "waiting" in text
+    assert "1 disc folder(s)" in text and "Disc" in text and "not processed yet" in text
 
 
 def test_a_rejected_request_logs_why_but_never_the_token(env, caplog):
@@ -219,3 +219,25 @@ def test_a_rejected_request_logs_why_but_never_the_token(env, caplog):
     text = caplog.text
     assert "no Authorization header" in text and "does not match" in text
     assert "s3cret-value" not in text and "nope" not in text
+
+
+def test_queue_explains_states_and_lists_what_is_ready_to_apply(env, client):
+    tmp, state, *_ = env
+    pid, _ = make_plan(tmp, state, [("a.mkv", True, 0.999), ("b.mkv", False, 0.1)])
+    (state / "state.json").write_text(json.dumps({
+        str(tmp / "staging" / "Disc"): {"outcome": "done", "identified": 1, "total": 2,
+                                        "plan": pid, "renamed": 0}}))
+    other = tmp / "staging" / "Film (2001)"
+    other.mkdir()
+    (other / "f.mkv").write_bytes(b"x")
+    (state / "state.json").write_text(json.dumps({
+        str(tmp / "staging" / "Disc"): {"outcome": "done", "identified": 1, "total": 2,
+                                        "plan": pid, "renamed": 0},
+        str(other): {"outcome": "triage_movie"}}))
+    text = call(client, "queue")
+    assert "1 of 2 files identified" in text
+    assert "looks like a movie, not TV: left alone, nothing to do" in text
+    assert f"plan {pid} (Test Show): 1 file(s) ready" in text
+    call(client, "preview_apply", plan_id=pid)
+    call(client, "apply", plan_id=pid, confirm=True)
+    assert "Ready to apply: nothing" in call(client, "queue")
