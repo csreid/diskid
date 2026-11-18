@@ -1,0 +1,30 @@
+[Unit]
+Description=diskid MCP server: lets a language model (e.g. Open WebUI) drive the queue
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Same user and state as diskid.service: it reads plans/state and `apply` moves files.
+User=arm
+Group=arm
+# Needs DISKID_MCP_TOKEN (the server refuses a network bind without one) and
+# DISKID_MCP_ARGS (--host/--port plus --zip/--stt-url as for the watcher, but not
+# the watch-only --dry-run/--settle). Folders come from DISKID_WATCH_DIR etc.
+EnvironmentFile=/etc/diskid/diskid.env
+ExecStart=/opt/diskid/.venv/bin/diskid mcp $DISKID_MCP_ARGS
+Restart=on-failure
+RestartSec=30
+
+StateDirectory=diskid
+CacheDirectory=diskid
+Environment=HF_HOME=/var/cache/diskid/huggingface
+
+Nice=10
+IOSchedulingClass=idle
+CPUSchedulingPolicy=idle
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

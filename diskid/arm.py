@@ -65,3 +65,21 @@ def show_hint(db_path: Path, disc_dir: Path) -> str | None:
     """A show-name hint for `disc_dir` from its ARM label, or None."""
     label = label_for(db_path, disc_dir)
     return clean_label(label) if label else None
+
+
+def recent_jobs(db_path: Path, n: int = 3) -> list[dict]:
+    """The newest `n` ARM jobs (id, title, label, status, titles, times, ejected, errors)."""
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
+        con.row_factory = sqlite3.Row
+        try:
+            cols = {r[1] for r in con.execute("PRAGMA table_info(job)")}
+            want = [c for c in ("job_id", "title", "label", "status", "no_of_titles",
+                                "start_time", "stop_time", "ejected", "errors") if c in cols]
+            rows = con.execute(
+                f"SELECT {', '.join(want)} FROM job ORDER BY job_id DESC LIMIT ?", (n,)).fetchall()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return []
+    return [dict(r) for r in rows]

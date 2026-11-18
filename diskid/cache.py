@@ -84,7 +84,8 @@ def save_mapping(
         "command": command, "show": show, "dry_run": dry_run, **extra,
         "entries": entries, "applied": None,
     }
-    path = plans_dir(state_dir) / f"{now:%Y%m%d-%H%M%S}-{plan_id}.json"
+    # microseconds keep plans made in the same second in creation order
+    path = plans_dir(state_dir) / f"{now:%Y%m%d-%H%M%S}{now.microsecond:06d}-{plan_id}.json"
     plan["_path"] = str(path)
     _write(path, plan)
     return plan_id

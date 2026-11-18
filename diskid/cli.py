@@ -316,6 +316,32 @@ def cmd_label(args) -> int:
     return 0
 
 
+def cmd_mcp(args) -> int:
+    """Serve the MCP tools over streamable HTTP (see diskid/mcp_server.py)."""
+    try:
+        import uvicorn
+        from . import mcp_server
+        from .jobs import RerunManager
+    except ImportError:
+        sys.exit("error: the MCP server needs the 'mcp' extra: uv sync --extra mcp")
+    token = os.environ.get("DISKID_MCP_TOKEN") or None
+    state_dir = args.state_dir or cache.default_state_dir()
+    ident = make_identifier(args, quiet=True)
+    ctx = mcp_server.McpContext(
+        state_dir=state_dir, folders=[*args.dir, *args.triage], arm_db=args.arm_db,
+        reruns=RerunManager(ident, state_dir), apply_min_score=args.apply_min_score,
+        calibration_log=calibration_path(args))
+    try:
+        app = mcp_server.make_app(ctx, host=args.host, port=args.port, token=token)
+    except ValueError as e:
+        sys.exit(f"error: {e}")
+    logging.getLogger("diskid.mcp").info(
+        "serving MCP on http://%s:%d/mcp (%s)", args.host, args.port,
+        "bearer token required" if token else "loopback only, no token")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="diskid", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -425,6 +451,31 @@ def main() -> None:
                               "or ~/.local/state/diskid)")
     common(p_watch, watch=True)
 
+    p_mcp = sub.add_parser(
+        "mcp", help="serve diskid to a language model over MCP (streamable HTTP); the token "
+                    "comes from $DISKID_MCP_TOKEN and is required unless --host is loopback")
+    p_mcp.add_argument("dir", type=Path, nargs="*",
+                       default=[Path(p) for p in os.environ.get("DISKID_WATCH_DIR", "").split()],
+                       help="folders of discs, as for `watch` (default: $DISKID_WATCH_DIR)")
+    p_mcp.add_argument("--triage", type=Path, action="append", metavar="DIR",
+                       default=[Path(p) for p in os.environ.get("DISKID_TRIAGE_DIR", "").split()],
+                       help="movie folders to include in the queue view (default: $DISKID_TRIAGE_DIR)")
+    p_mcp.add_argument("--arm-db", type=Path, metavar="FILE",
+                       default=Path(os.environ["DISKID_ARM_DB"])
+                       if os.environ.get("DISKID_ARM_DB") else None,
+                       help="ARM's arm.db, for the queue view (default: $DISKID_ARM_DB)")
+    p_mcp.add_argument("--host", default="127.0.0.1",
+                       help="address to listen on (default 127.0.0.1; use 0.0.0.0 for the LAN, "
+                            "which requires $DISKID_MCP_TOKEN)")
+    p_mcp.add_argument("--port", type=int, default=8765)
+    p_mcp.add_argument("--apply-min-score", type=float, default=0.99,
+                       help="`apply` refuses a plan with any confident file below this "
+                            "score (default 0.99)")
+    p_mcp.add_argument("--state-dir", type=Path, default=None,
+                       help="where plans, state.json and events.jsonl are "
+                            "(default: $STATE_DIRECTORY or ~/.local/state/diskid)")
+    common(p_mcp, watch=True)
+
     p_apply = sub.add_parser("apply", help="carry out saved plan(s) from an earlier dry run, "
                                            "without re-running identification")
     p_apply.add_argument("plan", nargs="+", metavar="PLAN",
@@ -466,6 +517,10 @@ def main() -> None:
 
     if args.command == "label":
         sys.exit(cmd_label(args))
+    if args.command == "mcp":
+        if not args.zip.is_file():
+            sys.exit(f"error: no such file: {args.zip}")
+        sys.exit(cmd_mcp(args))
 
     target = args.video if args.command == "identify" else args.dir
     if not (target.is_file() if args.command == "identify" else target.is_dir()):

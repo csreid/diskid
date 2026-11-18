@@ -219,6 +219,42 @@ Practical notes for a Pi:
 - `systemctl stop` aborts a disc in progress at the next clip; nothing is
   renamed until a disc's identification finishes.
 
+## MCP server (drive diskid from a language model)
+
+`diskid mcp` serves eight tools over MCP's streamable HTTP transport so a model
+(Open WebUI with a local model, say) can answer "what's in the queue?" and "rerun
+the unidentified ones with more samples":
+
+| Tool | Does |
+|---|---|
+| `queue` | disc folders in staging with their state, the latest ARM jobs, reruns in progress |
+| `unidentified` | files that couldn't be identified and are still on disk |
+| `show_plan(plan_id)` | a plan's files and verdicts |
+| `rerun(file_id, clips=20)` | re-identify one file with more samples, in the background (never moves anything) |
+| `job_status(job_id)` | progress or result of a rerun |
+| `preview_apply(plan_id)` | exactly what applying would move; required before `apply` |
+| `apply(plan_id, confirm)` | move a plan's confident files; never overwrites |
+| `label(file_id, episode)` | record a hand-checked answer for calibration |
+
+Models see short ids (`5ee1cb8c` is a plan, `5ee1cb8c.3` a file in it) and plain-text
+results, never paths. `apply` needs a `preview_apply` of the same plan, with the same
+moves, in the last 30 minutes, plus `confirm=true`, and it refuses any plan with a
+confident file scoring under `--apply-min-score` (0.99). That guards against mistakes;
+it can't tell a person's consent from a model's, so the tool descriptions tell the
+model to ask the user first. Nothing can delete files or touch ARM.
+
+```
+uv sync --extra mcp
+DISKID_MCP_TOKEN=$(openssl rand -hex 32) diskid mcp --host 0.0.0.0 --zip ... --stt-url ...
+```
+
+Without a token the server only starts on a loopback address. On the Pi use
+`deploy/diskid-mcp.service` (set `DISKID_MCP_TOKEN` and `DISKID_MCP_ARGS` in
+`/etc/diskid/diskid.env`). In Open WebUI add a tool server of type MCP (streamable
+HTTP) at `http://<host>:8765/mcp` with the token as the bearer credential. The server
+is stateless, so restarts don't break clients. File names and ARM labels come from
+discs; treat them as untrusted text.
+
 ## Remote transcription server
 
 Set `--stt-url http://host:8000/v1` (or `IdentifierConfig(stt_url=...)`) to
