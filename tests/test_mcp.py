@@ -325,3 +325,17 @@ def test_a_rerun_plan_still_sees_its_disc_and_extras_is_not_shown_as_the_disc(en
     assert "1 file(s) not identified" in text                # the rerun supersedes the old entry
     assert "LIKELY AN EPISODE" in text
     assert "disc 'Disc (2015)'" in text and "extras" not in text.replace("extras/", "")
+
+
+def test_edge_episodes_of_a_discs_run_count_as_likely_episodes(env, client):
+    tmp, state, *_ = env
+    pid, _ = make_plan(tmp, state, [("a.mkv", True, 0.999), ("b.mkv", True, 0.999),
+                                    ("c.mkv", False, 0.0), ("d.mkv", False, 0.0)])
+    plan = cache.load_mapping(pid, state)
+    # identified E02 and E03 (positions 1-2); unsure files guess E01 (before) and E04 (after)
+    for e, ep, guess in zip(plan["entries"], [2, 3, 0, 0], ["S01E02", "S01E03", "S01E01", "S01E04"]):
+        e["imdb_episode"] = [1, ep] if e["confident"] else None
+        e["best_guess"] = guess
+    next((state / "plans").glob(f"*{pid}.json")).write_text(json.dumps(plan))
+    text = call(client, "unidentified")
+    assert text.count("LIKELY AN EPISODE") == 2 and "probably an extra" not in text

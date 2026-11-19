@@ -118,6 +118,11 @@ def gap_hint(plan: dict, entry: dict, context: dict | None = None) -> str | None
         return (f"fits a gap: this disc's other files cover {_code(season, lo)}-E{hi:02d} "
                 f"except {', '.join(f'E{n:02d}' for n in missing)}, and the best guess is "
                 f"E{ep:02d} - probably that episode")
+    if ep in (lo - 1, hi + 1):
+        side = "just before" if ep < lo else "just after"
+        return (f"fits the disc's sequence: its other files cover {_code(season, lo)}-E{hi:02d} "
+                f"and the best guess E{ep:02d} comes {side} that run (a disc's first or last "
+                "episode) - probably that episode")
     return (f"does not fit a gap: the disc's other files cover {_code(season, lo)}-E{hi:02d}, "
             f"and {_code(season, ep)} is " + ("already taken by another file" if ep in have
                                            else "outside that range") + " - possibly an extra")
@@ -250,6 +255,7 @@ def describe_uncertain(rows: list[dict]) -> str:
     for r in rows:
         score = f"{r['best_score']:.3f}" if r["best_score"] is not None else "-"
         tag = {"fits a gap": "  [LIKELY AN EPISODE: best guess fills a gap on its disc]",
+               "fits the disc's sequence": "  [LIKELY AN EPISODE: best guess continues its disc's run]",
                "does not fit a gap": "  [probably an extra: no gap on its disc fits]"}.get(r["gap"], "")
         lines.append(f"  {r['id']}  {r['name']}  disc '{r['disc']}'  show={r['show']}  "
                      f"best guess {r['best_guess'] or '?'} ({score}){tag}")
