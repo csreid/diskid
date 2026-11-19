@@ -181,7 +181,7 @@ def build_server(ctx: McpContext, *, host: str = "127.0.0.1", port: int = 8765,
         running leader. Use it to decide whether a rerun is worth it."""
         plan, idx, entry = queries.get_entry(ctx.state_dir, file_id)
         obs = queries.find_observation(ctx.calibration_log, entry.get("calibration_id"))
-        return queries.describe_file(plan, idx, entry, obs, detail)
+        return queries.describe_file(plan, idx, entry, obs, detail, queries.context_for(ctx.state_dir))
 
     @mcp.tool()
     @_safe

@@ -297,3 +297,31 @@ def test_job_status_can_wait_for_a_rerun_to_finish(env, client):
     text = call(client, "job_status", job_id=job, wait_seconds=10)
     assert "done" in text and "inspect_file(" in text
     assert time.monotonic() - t0 < 5            # returned as soon as the job finished
+
+
+def test_a_rerun_plan_still_sees_its_disc_and_extras_is_not_shown_as_the_disc(env, client):
+    """Reruns are one-file plans; their gap hint must come from the whole disc, and ARM's
+    `extras/` subfolder must not be mistaken for a description of the file."""
+    tmp, state, ctx, _ = env
+    disc = tmp / "staging" / "Disc (2015)"
+    (disc / "extras").mkdir(parents=True)
+    def entry(name, ok, ep, guess):
+        f = disc / "extras" / name
+        f.write_bytes(b"x")
+        return dict(file=str(f), target=str(tmp / "t" / name) if ok else None, confident=ok,
+                    status="identified" if ok else "uncertain", episode=f"S01E{ep:02d}" if ok else None,
+                    score=0.999 if ok else None, best_guess=guess, best_score=0.0, size=1,
+                    calibration_id=None, imdb_episode=[1, ep] if ok else None, warnings=[], error=None)
+    # the disc's own plan: E01, E02, E04 identified, one file unsure
+    cache.save_mapping("watch", "Test Show", [entry("a.mkv", True, 1, "S01E01"),
+                                              entry("b.mkv", True, 2, "S01E02"),
+                                              entry("d.mkv", True, 4, "S01E04"),
+                                              entry("c.mkv", False, 0, "S01E03")],
+                       state_dir=state, source_dir=str(disc))
+    # a later rerun of c.mkv: a ONE-file plan, still unsure
+    cache.save_mapping("mcp-rerun", "Test Show", [entry("c.mkv", False, 0, "S01E03")],
+                       state_dir=state, source_dir=str(disc))
+    text = call(client, "unidentified")
+    assert "1 file(s) not identified" in text                # the rerun supersedes the old entry
+    assert "LIKELY AN EPISODE" in text
+    assert "disc 'Disc (2015)'" in text and "extras" not in text.replace("extras/", "")

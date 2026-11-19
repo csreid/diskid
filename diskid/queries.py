@@ -68,7 +68,33 @@ def _code(season: int, episode: int) -> str:
     return f"S{season:02d}E{episode:02d}"
 
 
-def gap_hint(plan: dict, entry: dict) -> str | None:
+def disc_dir_of(path: str | Path) -> Path:
+    """The disc folder a ripped file belongs to. ARM puts every non-main title in an
+    `extras/` subfolder whatever it contains, so that name says nothing about the file."""
+    parent = Path(path).parent
+    return parent.parent if parent.name.lower() == "extras" else parent
+
+
+def disc_context(plans: list[dict]) -> dict[Path, dict[int, set[int]]]:
+    """For each disc folder, the episodes (IMDb numbering) identified for it in ANY plan.
+
+    Reruns write one-file plans with no neighbours, so a file's disc context has to
+    come from every plan that touched the same disc, moved or not.
+    """
+    ctx: dict[Path, dict[int, set[int]]] = {}
+    for plan in plans:
+        for e in plan["entries"]:
+            if e["confident"] and e.get("imdb_episode"):
+                s_, ep = e["imdb_episode"]
+                ctx.setdefault(disc_dir_of(e["file"]), {}).setdefault(s_, set()).add(ep)
+    return ctx
+
+
+def context_for(state_dir: Path) -> dict[Path, dict[int, set[int]]]:
+    return disc_context([p for p in cache.list_plans(state_dir) if not p.get("discarded")])
+
+
+def gap_hint(plan: dict, entry: dict, context: dict | None = None) -> str | None:
     """Does this unsure file's best guess fill a hole in the disc's identified episodes?
 
     Discs hold consecutive episodes, so a file that can't be matched but whose
@@ -81,8 +107,9 @@ def gap_hint(plan: dict, entry: dict) -> str | None:
     if not m or entry["confident"]:
         return None
     season, ep = int(m[1]), int(m[2])
-    have = sorted(e["imdb_episode"][1] for e in plan["entries"]
-                  if e["confident"] and e.get("imdb_episode") and e["imdb_episode"][0] == season)
+    if context is None:
+        context = disc_context([plan])
+    have = sorted(context.get(disc_dir_of(entry["file"]), {}).get(season, ()))
     if not have:
         return None
     lo, hi = have[0], have[-1]
@@ -96,7 +123,8 @@ def gap_hint(plan: dict, entry: dict) -> str | None:
                                            else "outside that range") + " - possibly an extra")
 
 
-def describe_file(plan: dict, idx: int, entry: dict, obs: dict | None, detail: bool = False) -> str:
+def describe_file(plan: dict, idx: int, entry: dict, obs: dict | None, detail: bool = False,
+                  context: dict | None = None) -> str:
     """Everything known about one file's verdict: top matches, null probability, clips, gap hint."""
     name = _name(entry)
     head = f"{file_id(plan['id'], idx)}  {name}  show={plan['show']}"
@@ -125,7 +153,7 @@ def describe_file(plan: dict, idx: int, entry: dict, obs: dict | None, detail: b
                 rel = f"  ({top[0][2] / p_:.0f}x less likely than #1)"
             lines.append(f"  {i + 1}. {_code(s_, e_)}  {_p(p_)}{rel}")
         lines.append(f"Not any episode of this show: {_p(obs.get('null'))}")
-    hint = gap_hint(plan, entry)
+    hint = gap_hint(plan, entry, context)
     if hint:
         lines.append("Disc context: " + hint + ".")
     if obs and detail:
@@ -197,6 +225,7 @@ def uncertain_files(state_dir: Path, limit: int = 20) -> list[dict]:
     Newer plans supersede older ones for the same path, so a file that was
     rerun, identified and moved, or deleted drops off the list.
     """
+    context = context_for(state_dir)
     latest: dict[str, tuple[dict, int, dict]] = {}
     for plan in recent_plans(state_dir):
         for i, e in enumerate(plan["entries"]):
@@ -205,10 +234,11 @@ def uncertain_files(state_dir: Path, limit: int = 20) -> list[dict]:
     for path, (plan, i, e) in latest.items():
         if e["confident"] or e.get("error") or not os.path.isfile(path):
             continue
-        out.append(dict(id=file_id(plan["id"], i), name=_name(e), disc=Path(path).parent.name,
+        hint = gap_hint(plan, e, context)
+        out.append(dict(id=file_id(plan["id"], i), name=_name(e), disc=disc_dir_of(path).name,
                         show=plan["show"], best_guess=e.get("best_guess"),
                         best_score=e.get("best_score"), made=plan["created"],
-                        gap=(gap_hint(plan, e) or "").split(":")[0] if gap_hint(plan, e) else ""))
+                        gap=(hint or "").split(":")[0]))
     out.sort(key=lambda r: r["made"], reverse=True)
     return out[:limit]
 
@@ -221,7 +251,7 @@ def describe_uncertain(rows: list[dict]) -> str:
         score = f"{r['best_score']:.3f}" if r["best_score"] is not None else "-"
         tag = {"fits a gap": "  [LIKELY AN EPISODE: best guess fills a gap on its disc]",
                "does not fit a gap": "  [probably an extra: no gap on its disc fits]"}.get(r["gap"], "")
-        lines.append(f"  {r['id']}  {r['name']}  in '{r['disc']}'  show={r['show']}  "
+        lines.append(f"  {r['id']}  {r['name']}  disc '{r['disc']}'  show={r['show']}  "
                      f"best guess {r['best_guess'] or '?'} ({score}){tag}")
     lines.append("Why a file is unsure: inspect_file(file_id). Retry one with more samples: "
                  "rerun(file_id) (worth it mainly for the likely episodes).")
