@@ -35,14 +35,14 @@ def clean_label(label: str) -> str | None:
 
 
 def job_for(db_path: Path, disc_dir: Path) -> dict | None:
-    """The newest ARM job whose output folder is `disc_dir`: label, title, imdb_id, video_type."""
+    """The newest ARM job whose output folder is `disc_dir`: label, title, imdb_id, video_type, status."""
     tail = f"%/{disc_dir.parent.name}/{disc_dir.name}"
     try:
         con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
         con.row_factory = sqlite3.Row
         try:
             cols = {r[1] for r in con.execute("PRAGMA table_info(job)")}
-            want = [c for c in ("label", "title", "imdb_id", "video_type") if c in cols]
+            want = [c for c in ("label", "title", "imdb_id", "video_type", "status") if c in cols]
             if not want:
                 return None
             row = con.execute(
@@ -53,6 +53,16 @@ def job_for(db_path: Path, disc_dir: Path) -> dict | None:
     except sqlite3.Error:
         return None
     return dict(row) if row else None
+
+
+#: ARM job statuses that mean the job is finished (anything else may still write to its folder).
+FINISHED = ("success", "fail")
+
+
+def job_active(db_path: Path, disc_dir: Path) -> bool:
+    """Is the newest ARM job for `disc_dir` still running (ripping, transcoding, ...)?"""
+    job = job_for(db_path, disc_dir)
+    return bool(job and job.get("status") and job["status"] not in FINISHED)
 
 
 def label_for(db_path: Path, disc_dir: Path) -> str | None:

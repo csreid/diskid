@@ -233,7 +233,7 @@ def build_server(ctx: McpContext, *, host: str = "127.0.0.1", port: int = 8765,
             ctx.previews.pop(plan["id"], None)
             return "Not applied: the files changed since the preview. Run preview_apply again."
         ctx.previews.pop(plan["id"], None)
-        results = cache.apply_plan(plan, ctx.events, ctx.calibration_log)
+        results = cache.apply_plan(plan, ctx.events, ctx.calibration_log, arm_db=ctx.arm_db)
         moved = sum(r["renamed"] for r in results)
         ctx.events.write("mcp_apply", plan=plan["id"], moved=moved, total=len(results))
         skipped = [f"{Path(r['file']).name}: {r['reason']}" for r in results

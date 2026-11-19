@@ -74,7 +74,8 @@ class RerunManager:
             entry = cache.entry_for(res)
             plan_id = cache.save_mapping(
                 "mcp-rerun", job["show"], [entry], state_dir=self.state_dir, dry_run=True,
-                show_imdb=plan.get("show_imdb"), source_dir=str(path.parent))
+                show_imdb=plan.get("show_imdb"),
+                source_dir=plan.get("source_dir") or str(path.parent))
             job.update(plan_id=plan_id, new_file_id=queries.file_id(plan_id, 0))
             if res.identified:
                 job["summary"] = (f"identified as {res.episode.code} "

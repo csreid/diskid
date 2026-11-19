@@ -186,6 +186,9 @@ Everything is kept under the state directory (`$STATE_DIRECTORY`, else
   `--no-calibration-log`; `DISKID_CALIBRATION_LOG` overrides the path.
   `diskid label <observation-id> S02E06` records a hand-checked answer (IMDb numbering) that
   outranks `plan_applied`.
+- Applying a plan (via `diskid apply`, the watcher or the MCP `apply`) also removes the now-empty
+  disc folder and its empty subfolders (`rmdir` only, so a folder with any file stays), logged as
+  `dirs_pruned`. With `--arm-db`/`DISKID_ARM_DB` it skips a folder ARM still has a running job for.
 - `reports/`: the full `DiscResult` with candidate rankings, for reviewing misses.
 - `state.json`: which discs are done (note: a dry-run disc counts as done, so
   leaving `--dry-run` won't redo it; `diskid apply` its plan instead).

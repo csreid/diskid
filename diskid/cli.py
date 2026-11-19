@@ -263,7 +263,9 @@ def cmd_apply(args) -> int:
         if plan.get("applied"):
             log(f"note: plan {plan['id']} was already applied at {plan['applied']['at']}; "
                 "retrying any entries still unmoved (already-moved files are left alone)")
-        results = cache.apply_plan(plan, events, calibration.default_path(cache.default_state_dir()))
+        arm_db = Path(os.environ["DISKID_ARM_DB"]) if os.environ.get("DISKID_ARM_DB") else None
+        results = cache.apply_plan(plan, events, calibration.default_path(cache.default_state_dir()),
+                                   arm_db=arm_db)
         ok = ok and all(r["renamed"] for r in results
                         if any(e["file"] == r["file"] and e.get("confident") for e in plan["entries"]))
         if args.json:

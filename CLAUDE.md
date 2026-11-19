@@ -50,6 +50,7 @@ Design points that aren't obvious from the code (full derivation in `plan.md`):
 - **MCP server** (`mcp_server.py`, `diskid mcp`, optional `mcp` extra pinned `<2`: v2 renamed `FastMCP`): streamable HTTP for a language model (Open WebUI). `queries.py` is the read side (queue, plans, uncertain files; ids are `<plan>.<index>`), `jobs.py` runs reruns on one background thread. `apply` is two-step (`preview_apply` of the same moves within 30 min, then `confirm=true`), refuses any confident file below `--apply-min-score`, and never overwrites. Bearer token (`DISKID_MCP_TOKEN`) is mandatory off loopback. Tool results are plain text with short ids; disc-derived text is untrusted.
 - `identify-disc` assigns episodes uniquely across a disc's files (greedy by top score) — a duplicate episode claim means a bad match, not two copies of an episode.
 - Renames never overwrite an existing file.
+- `apply_plan` (CLI, watcher and MCP alike) cleans up after itself: it `rmdir`s the plan's `source_dir` (the disc folder) and any empty folders in it once files have moved out, logging `dirs_pruned`. It skips the folder while ARM's DB shows a running job for it (ARM creates a job's output folder up front and fills it when the transcode finishes, so an empty folder can be in use). `rmdir` only: a folder with any file is never touched.
 
 ## ARM Integration
 

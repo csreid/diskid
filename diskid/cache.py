@@ -21,8 +21,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import calibration
+from . import arm, calibration
 from .eventlog import EventLog
+from .fsutil import prune_empty_dirs
 from .identify import rename_to_target
 
 PLAN_VERSION = 1
@@ -127,13 +128,28 @@ def list_plans(state_dir: Path | None = None) -> list[dict]:
     return out
 
 
+def _prune_source(plan: dict, results: list[dict], arm_db: Path | None) -> list[Path]:
+    """Remove the plan's disc folder's empty folders after files moved out of it."""
+    src = plan.get("source_dir")
+    if not src or not any(r["renamed"] for r in results) or not Path(src).is_dir():
+        return []
+    root = Path(src)
+    if arm_db is not None and arm.job_active(arm_db, root):
+        return []
+    return prune_empty_dirs(root)
+
+
 def apply_plan(plan: dict, events: EventLog | None = None,
-               calibration_log: Path | None = None) -> list[dict]:
+               calibration_log: Path | None = None, arm_db: Path | None = None) -> list[dict]:
     """Carry out a plan's confident entries; record the outcome in the plan file.
 
     Never overwrites; refuses a source whose size changed since planning. With
     `calibration_log`, a moved file's observation is labelled "plan_applied".
     Entries an earlier apply already moved are skipped and keep their recorded result.
+    Afterwards the plan's `source_dir` (the disc folder) is cleaned of empty folders
+    (`rmdir` only; it is removed too if that leaves it empty) unless `arm_db` says
+    ARM still has a running job for it -- ARM creates a job's folder up front and
+    fills it when the transcode ends, so an empty folder can be one in use.
     Returns one result dict per entry: file, target, renamed, reason.
     """
     events = events or EventLog(None)
@@ -162,6 +178,9 @@ def apply_plan(plan: dict, events: EventLog | None = None,
                          target=str(target) if target else None, reason=reason or None)
         results.append({"file": str(file), "target": str(target) if target else None,
                         "renamed": renamed, "reason": reason})
+    removed = _prune_source(plan, results, arm_db)
+    if removed:
+        events.write("dirs_pruned", plan=plan["id"], removed=[str(p) for p in removed])
     plan["applied"] = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                        "results": results}
     plan["dry_run"] = False

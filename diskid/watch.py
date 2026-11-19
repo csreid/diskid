@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import arm, audio, cache, tmdb, triage
+from .fsutil import prune_empty_dirs  # noqa: F401  (re-exported)
 from .cache import default_state_dir  # noqa: F401  (re-exported)
 from .eventlog import EventLog
 from .identify import DiscResult, Identifier, ShowNotFoundError
@@ -57,23 +58,6 @@ def last_activity(directory: Path) -> float:
         except FileNotFoundError:  # vanished mid-scan: it is certainly active
             return time.time()
     return newest
-
-
-def prune_empty_dirs(root: Path) -> None:
-    """Remove `root`'s empty subfolders, and `root` itself if that leaves it empty.
-
-    Only ever calls `rmdir`, so a folder holding any file is left alone. Used
-    after files are moved out to a different output directory.
-    """
-    for d in sorted((p for p in root.rglob("*") if p.is_dir()), reverse=True):
-        try:
-            d.rmdir()
-        except OSError:
-            pass
-    try:
-        root.rmdir()
-    except OSError:
-        pass
 
 
 @dataclass
@@ -252,15 +236,14 @@ class DiscWatcher:
             plan = cache.load_mapping(plan_id, self.config.state_dir)
             for r in cache.apply_plan(plan, self.events,
                                       getattr(getattr(self.identifier, "config", None),
-                                              "calibration_log", None)):
+                                              "calibration_log", None),
+                                      arm_db=self.config.arm_db):
                 if r["renamed"]:
                     moved += 1
                     if r["file"] != r["target"]:
                         log.info("moved %s -> %s", Path(r["file"]).name, r["target"])
                 elif r["reason"] != "not confident":
                     log.warning("not moved: %s (%s)", Path(r["file"]).name, r["reason"])
-            if moved:
-                prune_empty_dirs(disc_dir)
         else:
             for f in disc.identified:
                 log.info("[dry run] %s -> %s", f.path.name, f.target_rel)
