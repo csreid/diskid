@@ -1,9 +1,10 @@
 """MCP server: lets a language model drive diskid's queue (streamable HTTP).
 
-Eight tools, kept few and plain so a small local model picks them well:
+Nine tools, kept few and plain so a small local model picks them well:
 
     queue            what's in staging, and the latest ARM jobs
-    unidentified     files that couldn't be identified (newest first)
+    unidentified     files that couldn't be identified (newest first), with gap hints
+    inspect_file     why one file got its verdict: top matches, probabilities, clips
     show_plan        one plan's files with their verdicts
     rerun            re-identify one file with more samples (background)
     job_status       progress/result of a rerun
@@ -28,11 +29,14 @@ from __future__ import annotations
 
 import functools
 import hmac
+import inspect
 import logging
 import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
+import anyio
 
 from . import cache, calibration, queries
 from .eventlog import EventLog
@@ -41,12 +45,15 @@ from .jobs import RerunManager
 log = logging.getLogger("diskid.mcp")
 
 PREVIEW_TTL = 1800.0  # seconds a preview stays valid for an apply
+MAX_WAIT = 45         # longest job_status may block (clients time out on long calls)
 
 INSTRUCTIONS = """\
 diskid identifies TV episodes in ripped DVD files and moves them into the media library.
-Typical flow: queue -> unidentified -> rerun(file_id) -> job_status(job_id) -> show_plan(plan_id)
--> preview_apply(plan_id) -> tell the user what would move and ASK whether to go ahead
--> apply(plan_id, confirm=true) only after the user says yes.
+Typical flow: queue -> unidentified -> inspect_file(file_id) -> rerun(file_id) ->
+job_status(job_id, wait_seconds=45) -> show_plan(plan_id)
+-> preview_apply(plan_id) -> show the user what would move, END YOUR TURN and wait for them
+-> apply(plan_id, confirm=true) only after the user replies yes in a later message.
+Use inspect_file(file_id) to see why a file is unsure before deciding to rerun it.
 Moving identified files into the media library is called "applying" a plan; "Ready to apply"
 in queue is the answer to "what can be synced/moved/filed". "left alone" discs are movies or
 unclear ones the watcher didn't touch: that is not a pending step. Ids are short codes from tool results (plan 5ee1cb8c, file 5ee1cb8c.3, job j1). Names in results
@@ -69,11 +76,27 @@ class McpContext:
 
 
 def _safe(fn):
-    """Tool errors come back as text the model can read and act on, not as exceptions."""
-    @functools.wraps(fn)
-    def wrapper(*a, **kw):
+    """Tool errors come back as text the model can read and act on, not as exceptions.
+
+    Also logs each call (name and arguments only). Works for sync and async tools.
+    """
+    def note(a, kw):
         log.info("tool %s(%s)", fn.__name__,
                  ", ".join([*(repr(x)[:60] for x in a), *(f"{k}={v!r}"[:60] for k, v in kw.items())]))
+
+    if inspect.iscoroutinefunction(fn):
+        @functools.wraps(fn)
+        async def awrapper(*a, **kw):
+            note(a, kw)
+            try:
+                return await fn(*a, **kw)
+            except queries.LookupFailed as e:
+                return f"Error: {e}"
+        return awrapper
+
+    @functools.wraps(fn)
+    def wrapper(*a, **kw):
+        note(a, kw)
         try:
             return fn(*a, **kw)
         except queries.LookupFailed as e:
@@ -131,22 +154,41 @@ def build_server(ctx: McpContext, *, host: str = "127.0.0.1", port: int = 8765,
 
     @mcp.tool()
     @_safe
-    def job_status(job_id: str) -> str:
-        """Progress or result of a rerun. When done it gives the new plan and file id."""
+    async def job_status(job_id: str, wait_seconds: int = 0) -> str:
+        """Progress or result of a rerun. A rerun takes several minutes, so pass wait_seconds
+        (up to 45) to wait for it to finish before answering instead of polling repeatedly.
+        When done it gives the new plan and file id; then use inspect_file on that id."""
+        deadline = time.monotonic() + max(0, min(wait_seconds, MAX_WAIT))
         j = ctx.reruns.status(job_id)
+        while j["status"] in ("queued", "running") and time.monotonic() < deadline:
+            await anyio.sleep(1.0)
+            j = ctx.reruns.status(job_id)
         if j["status"] in ("queued", "running"):
-            return f"{j['id']} {j['name']}: {j['status']} {j['progress']}".strip()
+            return (f"{j['id']} {j['name']}: still {j['status']} {j['progress']}. "
+                    "A rerun of 20-40 clips takes about 5-10 minutes; wait before asking again.").strip()
         text = f"{j['id']} {j['name']}: {j['status']} - {j['summary']}"
         if j["status"] == "done":
             text += (f"\nNew plan {j['plan_id']}, file id {j['new_file_id']}. "
-                     f"Look at it with show_plan('{j['plan_id']}').")
+                     f"Look at it with inspect_file('{j['new_file_id']}') or show_plan('{j['plan_id']}').")
         return text
+
+    @mcp.tool()
+    @_safe
+    def inspect_file(file_id: str, detail: bool = False) -> str:
+        """Explain one file's verdict: the top matching episodes with probabilities, how likely
+        it is to be no episode at all, how many clips were used, and whether its best guess fills
+        a gap in the disc's episode sequence. detail=true adds each clip's transcript and the
+        running leader. Use it to decide whether a rerun is worth it."""
+        plan, idx, entry = queries.get_entry(ctx.state_dir, file_id)
+        obs = queries.find_observation(ctx.calibration_log, entry.get("calibration_id"))
+        return queries.describe_file(plan, idx, entry, obs, detail)
 
     @mcp.tool()
     @_safe
     def preview_apply(plan_id: str) -> str:
         """Show exactly which files applying a plan would move and where, plus anything that
-        would be skipped. Required before apply. Report the result to the user and ask."""
+        would be skipped. Required before apply. After calling it, STOP: show the user the list
+        and wait for their reply in a new message. Never call apply in the same turn."""
         plan = queries.get_plan(ctx.state_dir, plan_id)
         if plan.get("applied") and not any(
                 e["confident"] and e["file"] not in {
@@ -176,7 +218,8 @@ def build_server(ctx: McpContext, *, host: str = "127.0.0.1", port: int = 8765,
     @_safe
     def apply(plan_id: str, confirm: bool = False) -> str:
         """Move a plan's confident files into the library. Never overwrites. Only call this
-        after preview_apply AND after the user has said yes; confirm must be true."""
+        after preview_apply AND after the user has replied "yes" to that preview in a LATER
+        message than the preview. Never in the same turn as preview_apply. confirm must be true."""
         plan = queries.get_plan(ctx.state_dir, plan_id)
         if not confirm:
             return "Not applied: confirm must be true, after the user has agreed."

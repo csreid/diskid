@@ -41,6 +41,107 @@ def parse_file_id(text: str) -> tuple[str, int]:
     return m[1], int(m[2])
 
 
+def find_observation(calibration_log: Path | None, obs_id: str | None) -> dict | None:
+    """The calibration `observation` record with this id (None if absent or unreadable)."""
+    if not calibration_log or not obs_id:
+        return None
+    needle = f'"id": "{obs_id}"'
+    found = None
+    try:
+        with calibration_log.open() as f:
+            for line in f:
+                if needle in line and '"observation"' in line:
+                    found = json.loads(line)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return found
+
+
+def _p(x: float | None) -> str:
+    """A probability, readable at both ends: 0.998, 4.2e-05."""
+    if x is None:
+        return "-"
+    return f"{x:.3f}" if x >= 0.001 else (f"{x:.1e}" if x > 0 else "0")
+
+
+def _code(season: int, episode: int) -> str:
+    return f"S{season:02d}E{episode:02d}"
+
+
+def gap_hint(plan: dict, entry: dict) -> str | None:
+    """Does this unsure file's best guess fill a hole in the disc's identified episodes?
+
+    Discs hold consecutive episodes, so a file that can't be matched but whose
+    best guess is exactly a missing number is very likely that episode (the
+    matcher's hallucination weakness makes such files fail unsure). Numbers are
+    in IMDb numbering, as `best_guess` is.
+    """
+    guess = entry.get("best_guess")
+    m = re.fullmatch(r"S(\d+)E(\d+)", guess or "")
+    if not m or entry["confident"]:
+        return None
+    season, ep = int(m[1]), int(m[2])
+    have = sorted(e["imdb_episode"][1] for e in plan["entries"]
+                  if e["confident"] and e.get("imdb_episode") and e["imdb_episode"][0] == season)
+    if not have:
+        return None
+    lo, hi = have[0], have[-1]
+    missing = [n for n in range(lo, hi + 1) if n not in have]
+    if ep in missing:
+        return (f"fits a gap: this disc's other files cover {_code(season, lo)}-E{hi:02d} "
+                f"except {', '.join(f'E{n:02d}' for n in missing)}, and the best guess is "
+                f"E{ep:02d} - probably that episode")
+    return (f"does not fit a gap: the disc's other files cover {_code(season, lo)}-E{hi:02d}, "
+            f"and {_code(season, ep)} is " + ("already taken by another file" if ep in have
+                                           else "outside that range") + " - possibly an extra")
+
+
+def describe_file(plan: dict, idx: int, entry: dict, obs: dict | None, detail: bool = False) -> str:
+    """Everything known about one file's verdict: top matches, null probability, clips, gap hint."""
+    name = _name(entry)
+    head = f"{file_id(plan['id'], idx)}  {name}  show={plan['show']}"
+    if obs and obs.get("duration"):
+        mins = obs["duration"] / 60
+        head += f"  length {int(mins)}:{int(obs['duration'] % 60):02d}"
+    lines = [head]
+    if entry["confident"]:
+        lines.append(f"Verdict: identified as {entry['episode']} ({_p(entry.get('score'))}).")
+    else:
+        lines.append("Verdict: NOT identified (needs a score of 0.99 or more).")
+    if not obs:
+        lines.append("No recorded clip details for this file (identified before calibration "
+                     "logging, or logging is off).")
+        if entry.get("best_guess"):
+            lines.append(f"Best guess {entry['best_guess']} ({_p(entry.get('best_score'))}).")
+    else:
+        lines.append(f"Used {obs['n_clips']} clips"
+                     + (f" ({len(obs['clips']) - obs['n_clips']} silent)"
+                        if len(obs["clips"]) > obs["n_clips"] else "") + ".")
+        lines.append("Top matches (probability, aired-order numbers):")
+        top = obs["ranked"]
+        for i, (s_, e_, p_) in enumerate(top):
+            rel = ""
+            if i and top[0][2] > 0 and p_ > 0:
+                rel = f"  ({top[0][2] / p_:.0f}x less likely than #1)"
+            lines.append(f"  {i + 1}. {_code(s_, e_)}  {_p(p_)}{rel}")
+        lines.append(f"Not any episode of this show: {_p(obs.get('null'))}")
+    hint = gap_hint(plan, entry)
+    if hint:
+        lines.append("Disc context: " + hint + ".")
+    if obs and detail:
+        lines.append("Clip by clip (time in file, leader so far, not-an-episode probability, text):")
+        for c in obs["clips"]:
+            text = (c["text"].strip() or "(silent)")[:70]
+            if c.get("top"):
+                lines.append(f"  {int(c['t']):>5}s  {_code(*c['top'][:2])} {_p(c['top'][2])}  "
+                             f"null {_p(c.get('null'))}  \"{text}\"")
+            else:
+                lines.append(f"  {int(c['t']):>5}s  {text}")
+    elif obs:
+        lines.append("For the clip-by-clip transcripts call inspect_file with detail=true.")
+    return "\n".join(lines)
+
+
 def get_plan(state_dir: Path, plan_id: str) -> dict:
     plan_id = plan_id.strip().removeprefix("plan:")
     plan = cache.load_mapping(plan_id, state_dir) if plan_id.isalnum() else None
@@ -106,7 +207,8 @@ def uncertain_files(state_dir: Path, limit: int = 20) -> list[dict]:
             continue
         out.append(dict(id=file_id(plan["id"], i), name=_name(e), disc=Path(path).parent.name,
                         show=plan["show"], best_guess=e.get("best_guess"),
-                        best_score=e.get("best_score"), made=plan["created"]))
+                        best_score=e.get("best_score"), made=plan["created"],
+                        gap=(gap_hint(plan, e) or "").split(":")[0] if gap_hint(plan, e) else ""))
     out.sort(key=lambda r: r["made"], reverse=True)
     return out[:limit]
 
@@ -117,9 +219,12 @@ def describe_uncertain(rows: list[dict]) -> str:
     lines = [f"{len(rows)} file(s) not identified (newest first):"]
     for r in rows:
         score = f"{r['best_score']:.3f}" if r["best_score"] is not None else "-"
+        tag = {"fits a gap": "  [LIKELY AN EPISODE: best guess fills a gap on its disc]",
+               "does not fit a gap": "  [probably an extra: no gap on its disc fits]"}.get(r["gap"], "")
         lines.append(f"  {r['id']}  {r['name']}  in '{r['disc']}'  show={r['show']}  "
-                     f"best guess {r['best_guess'] or '?'} ({score})")
-    lines.append("Rerun one with more samples: rerun(file_id).")
+                     f"best guess {r['best_guess'] or '?'} ({score}){tag}")
+    lines.append("Why a file is unsure: inspect_file(file_id). Retry one with more samples: "
+                 "rerun(file_id) (worth it mainly for the likely episodes).")
     return "\n".join(lines)
 
 

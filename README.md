@@ -221,17 +221,18 @@ Practical notes for a Pi:
 
 ## MCP server (drive diskid from a language model)
 
-`diskid mcp` serves eight tools over MCP's streamable HTTP transport so a model
+`diskid mcp` serves nine tools over MCP's streamable HTTP transport so a model
 (Open WebUI with a local model, say) can answer "what's in the queue?" and "rerun
 the unidentified ones with more samples":
 
 | Tool | Does |
 |---|---|
 | `queue` | disc folders in staging with their state, the latest ARM jobs, reruns in progress |
-| `unidentified` | files that couldn't be identified and are still on disk |
+| `unidentified` | files that couldn't be identified and are still on disk, tagged when the best guess fills a gap on the disc (likely an episode) or doesn't (likely an extra) |
+| `inspect_file(file_id, detail)` | why a file got its verdict: top matches with probabilities, the "not an episode" probability, clips used, gap hint; `detail` adds each clip's transcript |
 | `show_plan(plan_id)` | a plan's files and verdicts |
 | `rerun(file_id, clips=20)` | re-identify one file with more samples, in the background (never moves anything) |
-| `job_status(job_id)` | progress or result of a rerun |
+| `job_status(job_id, wait_seconds)` | progress or result of a rerun; `wait_seconds` (max 45) waits for it instead of polling |
 | `preview_apply(plan_id)` | exactly what applying would move; required before `apply` |
 | `apply(plan_id, confirm)` | move a plan's confident files; never overwrites |
 | `label(file_id, episode)` | record a hand-checked answer for calibration |

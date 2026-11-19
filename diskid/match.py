@@ -65,6 +65,11 @@ LENGTH_NULL_RANGE = 3600.0  # seconds, +/-: reference "could be anything" durati
 WORD_RE = re.compile(r"[a-z0-9']+")
 
 
+def sig(x: float, digits: int = 6) -> float:
+    """Round to significant digits (not decimals): tiny posteriors stay comparable."""
+    return float(f"{x:.{digits}g}")
+
+
 def _normalize(text: str) -> list[str]:
     return WORD_RE.findall(text.lower())
 
@@ -372,9 +377,9 @@ class BayesianIdentifier:
         top = self.ranked()[0] if self.beliefs else None
         self.trace.append({
             "t": capture_time, "text": clip_text,
-            "top": [top.season, top.episode, round(top.score, 6)] if top else None,
+            "top": [top.season, top.episode, sig(top.score)] if top else None,
             "offset": top.offset if top else None,
-            "null": round(self.null_probability(), 6),
+            "null": sig(self.null_probability()),
         })
 
     def _posterior(self) -> dict[EpisodeKey, float]:

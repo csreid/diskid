@@ -104,7 +104,7 @@ def test_bearer_token_is_required_when_set(env):
         r = c.post("/mcp", headers=good, json=body)
         assert r.status_code == 200
         assert {t["name"] for t in r.json()["result"]["tools"]} == {
-            "queue", "unidentified", "show_plan", "rerun", "job_status",
+            "queue", "unidentified", "inspect_file", "show_plan", "rerun", "job_status",
             "preview_apply", "apply", "label"}
 
 
@@ -241,3 +241,59 @@ def test_queue_explains_states_and_lists_what_is_ready_to_apply(env, client):
     call(client, "preview_apply", plan_id=pid)
     call(client, "apply", plan_id=pid, confirm=True)
     assert "Ready to apply: nothing" in call(client, "queue")
+
+
+def make_observation(ctx, obs_id, ranked, null, clips, n_clips=None, duration=1300.0):
+    ctx.calibration_log.parent.mkdir(parents=True, exist_ok=True)
+    rec = {"event": "observation", "id": obs_id, "duration": duration,
+           "n_clips": n_clips or len(clips), "ranked": ranked, "null": null, "clips": clips}
+    with ctx.calibration_log.open("a") as f:
+        f.write(json.dumps(rec) + "\n")
+
+
+def test_inspect_file_shows_matches_probabilities_and_gap_hint(env, client):
+    tmp, state, ctx, _ = env
+    # a disc with E01, E02, E04 identified and a file whose best guess is the missing E03
+    pid, _ = make_plan(tmp, state, [("a.mkv", True, 0.999), ("b.mkv", True, 0.999),
+                                    ("c.mkv", False, 0.0004), ("d.mkv", True, 0.999)])
+    # make_plan numbers confident entries by position, so give the plan the gap explicitly
+    plan = cache.load_mapping(pid, state)
+    for e, ep in zip(plan["entries"], [1, 2, 3, 4]):
+        e["imdb_episode"] = [1, ep] if e["confident"] else None
+        e["best_guess"] = f"S01E{ep:02d}"
+    plan["entries"][3]["imdb_episode"] = [1, 4]
+    (next((state / "plans").glob(f"*{pid}.json"))).write_text(json.dumps(plan))
+    make_observation(ctx, "obs3", ranked=[[1, 3, 0.0004], [1, 5, 0.00002], [1, 2, 1e-7]],
+                     null=0.9981, n_clips=2, clips=[
+        {"t": 195.0, "text": "I have your mail, I live across the hall.", "top": [1, 3, 0.3],
+         "offset": 6.0, "null": 0.0085},
+        {"t": 394.0, "text": "Come on! God! God! God!", "top": [1, 3, 0.0], "offset": 3.0, "null": 1.0},
+        {"t": 500.0, "text": "", "top": None}])
+    text = call(client, "inspect_file", file_id=f"{pid}.2")
+    assert "NOT identified" in text and "Used 2 clips (1 silent)" in text
+    assert "1. S01E03  4.0e-04" in text and "20x less likely than #1" in text
+    assert "Not any episode of this show: 0.998" in text
+    assert "fits a gap" in text and "E03" in text and "clip-by-clip" in text
+    assert "God! God!" not in text                       # transcripts only with detail
+    detail = call(client, "inspect_file", file_id=f"{pid}.2", detail=True)
+    assert "God! God! God!" in detail and "(silent)" in detail and "null 1" in detail
+    # the unidentified list carries the same hint
+    assert "LIKELY AN EPISODE" in call(client, "unidentified")
+
+
+def test_inspect_file_without_recorded_clips_still_answers(env, client):
+    tmp, state, *_ = env
+    pid, _ = make_plan(tmp, state, [("a.mkv", False, 0.2)])
+    text = call(client, "inspect_file", file_id=f"{pid}.0")
+    assert "NOT identified" in text and "No recorded clip details" in text
+    assert call(client, "inspect_file", file_id="zzzz").startswith("Error")
+
+
+def test_job_status_can_wait_for_a_rerun_to_finish(env, client):
+    tmp, state, *_ = env
+    pid, _ = make_plan(tmp, state, [("a.mkv", False, 0.001)])
+    job = call(client, "rerun", file_id=f"{pid}.0", clips=20).split()[1].rstrip(":")
+    t0 = time.monotonic()
+    text = call(client, "job_status", job_id=job, wait_seconds=10)
+    assert "done" in text and "inspect_file(" in text
+    assert time.monotonic() - t0 < 5            # returned as soon as the job finished

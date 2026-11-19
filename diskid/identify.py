@@ -48,6 +48,7 @@ from .match import (
     ConsensusScore,
     assign_episodes,
     is_confident,
+    sig,
 )
 
 log = logging.getLogger("diskid")
@@ -607,7 +608,7 @@ class Identifier:
                         stt_model=cfg.stt_model or cfg.model, remote_stt=bool(cfg.stt_url)),
             constants=calibration.model_constants(),
             clips=ident.trace,
-            ranked=[[c.season, c.episode, round(c.score, 6)] for c in raw.ranked[:5]],
+            ranked=[[c.season, c.episode, sig(c.score)] for c in raw.ranked[:5]],
             null=raw.null_probability, n_clips=raw.clips_used,
         )
         return rec_id
