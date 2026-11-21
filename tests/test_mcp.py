@@ -268,6 +268,10 @@ def test_queue_sorts_folders_by_what_to_do_about_them(env, client):
     tmp, state, ctx, _ = env
     ctx.folders = [tmp / "staging" / "tv", tmp / "staging" / "movies"]
     unprocessed = staged(tmp, "Show (2020)", "tv", 2)
+    import os
+    for f in unprocessed.iterdir():                          # written long ago, never processed
+        os.utime(f, (1_000_000, 1_000_000))
+    settling = staged(tmp, "Just-Finished (2024)", "tv", 1)   # written just now: ARM is done, watcher not yet
     film = staged(tmp, "Zoolander (2001)")
     unclear = staged(tmp, "Community Season 1 disc 2 (2009)")
     ready_disc = staged(tmp, "Mad Men (2007)", "tv", 2)
@@ -293,6 +297,8 @@ def test_queue_sorts_folders_by_what_to_do_about_them(env, client):
     assert "Show (2020)" in needs and "not processed yet" in needs
     assert "Community Season 1 disc 2" in needs and "could not tell movie from TV" in needs
     assert "Zoolander" not in needs and "Barbie" not in needs and "Mad Men (2007)" not in needs
+    assert "Just-Finished" not in needs                         # settling, not waiting for a person
+    assert "Still being written or settling" in text and "Just-Finished (2024) (1)" in text
     assert f"plan {pid} (Mad Men): 1 file(s) ready, from 'Mad Men (2007)'" in text
     assert "Movies waiting for you to file (diskid doesn't file movies): Zoolander (2001)" in text
     assert "Leftovers from discs already filed (1 folders, 2 files" in text and "Barbie" in text

@@ -15,10 +15,14 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 
 from . import arm, cache
+
+#: A folder written to this recently, with no result yet, is settling, not waiting for a person.
+SETTLING_SECONDS = 15 * 60
 
 #: How many of the newest plans `uncertain_files` looks through.
 RECENT_PLANS = 60
@@ -344,19 +348,23 @@ def queue(state_dir: Path, folders: list[Path], arm_db: Path | None = None,
             continue
         for d in discs:
             try:
-                n = sum(1 for f in d.rglob("*") if f.is_file())
+                mtimes = [f.stat().st_mtime for f in d.rglob("*") if f.is_file()]
             except OSError:
-                n = 0
+                mtimes = []
+            n = len(mtimes)
             if n == 0:
                 continue
             s = _disc_state(state, d)
             outcome = s.get("outcome")
+            fresh = time.time() - max(mtimes) < SETTLING_SECONDS
             if d in ready_folders:
                 continue                                    # listed under Ready to apply
             if arm_db and arm.job_active(arm_db, d):
-                busy.append((d.name, n))
+                busy.append((d.name, n))                    # ARM is still writing it
             elif moved.get(d):
                 leftovers.append((d.name, n))
+            elif fresh and not outcome:
+                busy.append((d.name, n))                    # ARM just finished; watcher not yet
             elif outcome == "triage_movie":
                 movies.append((d.name, n))
             else:
@@ -402,7 +410,8 @@ def queue(state_dir: Path, folders: list[Path], arm_db: Path | None = None,
     else:
         out.append("Ready to apply: nothing. No plan has files waiting to be moved.")
     if busy:
-        out.append("Still being written by ARM (not ready yet): "
+        out.append("Still being written or settling (the watcher picks these up by itself a few "
+                   "minutes after ARM finishes; nothing for you to do yet): "
                    + _names([f"{name} ({n})" for name, n in busy]))
     if look:
         out.append("Needs a person:")
