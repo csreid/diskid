@@ -16,6 +16,7 @@ diskid is part of a DVD ripping pipeline that identifies TV episodes so ripped f
 The project uses [uv](https://docs.astral.sh/uv/) for Python management (Python 3.12, pinned in `.python-version`).
 
 - Identify one file: `uv run diskid identify FILE --show NAME [--apply] [--json]`
+- Check a file is a given movie: `uv run diskid check-movie FILE (--imdb tt0092890 | --title "Dirty Dancing (1987)")` (exit 1 if not a confident match)
 - Identify a ripped-disc folder: `uv run diskid identify-disc DIR [--show NAME] [--apply]` (show name inferred from ARM-style `Title (Year)` folder names)
 - Tests: `uv run pytest`
 - Add a dependency: `uv add <package>`
@@ -27,7 +28,7 @@ There is no linter or Dockerfile yet.
 The subtitle reference database is the OPUS OpenSubtitles v2024 raw English archive at `subtitle_data/en.zip` (35 GB, gitignored; from `https://object.pouta.csc.fi/OPUS-OpenSubtitles/v2024/raw/en.zip`). Keep it as a zip — entries are read lazily via random access; never extract it wholesale.
 
 - Layout: `OpenSubtitles/raw/en/<year>/<key>/<file_id>.xml`, where `<key>` is either a bare IMDb id (movies) or `<episode_imdb>_<show_imdb>_<season>_<episode>` for TV episodes.
-- `diskid/subdb.py` builds a derived index (`subtitle_data/en.episodes.tsv`) on first use: one row per episode subtitle file, `show_id<TAB>season<TAB>episode<TAB>zip_entry`.
+- `diskid/subdb.py` builds a derived index (`subtitle_data/en.episodes.tsv`) on first use: one row per episode subtitle file, `show_id<TAB>season<TAB>episode<TAB>zip_entry`. A second one, `en.movies.tsv` (`imdb_id<TAB>year<TAB>zip_entry`), covers movies. `Identifier.check_movie` verifies a file against a claimed movie by running the episode matcher over the claimed movie plus ~8 random decoy movies and the null hypothesis (the claimed movie is keyed `(1, 0)`: `(0, 0)` is `NULL_KEY`).
 - **Caveat**: some archive files are misfiled under the wrong episode (community upload errors). Aggregate per-episode scores with a median across subtitle files, never a max, so one bad file can't poison a ranking.
 - Show names resolve to IMDb ids via the unofficial IMDb suggestion API (`https://v2.sg.media-imdb.com/suggestion/<initial>/<query>.json`), no key needed.
 - **Episode numbering caveat**: archive keys use IMDb *aired-order* numbering, which can disagree with the production/DVD order used by TMDB/TVDB and expected by media servers (canonical example: Futurama 1ACV10–13 = IMDb S2E1–4). Matching happens in IMDb space; filenames are remapped to TMDB numbering by default (`--order tmdb`, `diskid/tmdb.py`, needs `TMDB_APIKEY` in env or `.env`) via the matched episode's own IMDb id — never assume the two numberings agree.
