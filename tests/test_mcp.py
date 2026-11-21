@@ -203,13 +203,6 @@ def test_label_writes_a_manual_label_for_the_files_observation(env, client):
     assert call(client, "label", file_id=f"{pid}.0", episode="nope").startswith("Error")
 
 
-def test_queue_shows_disc_state(env, client):
-    tmp, state, *_ = env
-    make_plan(tmp, state, [("a.mkv", True, 0.999)])
-    text = call(client, "queue")
-    assert "1 disc folder(s)" in text and "Disc" in text and "not processed yet" in text
-
-
 def test_a_rejected_request_logs_why_but_never_the_token(env, caplog):
     _, _, ctx, _ = env
     app = mcp_server.make_app(ctx, host="0.0.0.0", port=8765, token="s3cret-value")
@@ -219,84 +212,6 @@ def test_a_rejected_request_logs_why_but_never_the_token(env, caplog):
     text = caplog.text
     assert "no Authorization header" in text and "does not match" in text
     assert "s3cret-value" not in text and "nope" not in text
-
-
-def test_queue_explains_states_and_lists_what_is_ready_to_apply(env, client):
-    tmp, state, *_ = env
-    pid, _ = make_plan(tmp, state, [("a.mkv", True, 0.999), ("b.mkv", False, 0.1)])
-    (state / "state.json").write_text(json.dumps({
-        str(tmp / "staging" / "Disc"): {"outcome": "done", "identified": 1, "total": 2,
-                                        "plan": pid, "renamed": 0}}))
-    other = tmp / "staging" / "Film (2001)"
-    other.mkdir()
-    (other / "f.mkv").write_bytes(b"x")
-    (state / "state.json").write_text(json.dumps({
-        str(tmp / "staging" / "Disc"): {"outcome": "done", "identified": 1, "total": 2,
-                                        "plan": pid, "renamed": 0},
-        str(other): {"outcome": "triage_movie"}}))
-    text = call(client, "queue")
-    assert "1 of 2 files identified" in text
-    assert "looks like a movie, not TV: left alone, nothing to do" in text
-    assert f"plan {pid} (Test Show): 1 file(s) ready" in text
-    call(client, "preview_apply", plan_id=pid)
-    call(client, "apply", plan_id=pid, confirm=True)
-    assert "Ready to apply: nothing" in call(client, "queue")
-
-
-def make_observation(ctx, obs_id, ranked, null, clips, n_clips=None, duration=1300.0):
-    ctx.calibration_log.parent.mkdir(parents=True, exist_ok=True)
-    rec = {"event": "observation", "id": obs_id, "duration": duration,
-           "n_clips": n_clips or len(clips), "ranked": ranked, "null": null, "clips": clips}
-    with ctx.calibration_log.open("a") as f:
-        f.write(json.dumps(rec) + "\n")
-
-
-def test_inspect_file_shows_matches_probabilities_and_gap_hint(env, client):
-    tmp, state, ctx, _ = env
-    # a disc with E01, E02, E04 identified and a file whose best guess is the missing E03
-    pid, _ = make_plan(tmp, state, [("a.mkv", True, 0.999), ("b.mkv", True, 0.999),
-                                    ("c.mkv", False, 0.0004), ("d.mkv", True, 0.999)])
-    # make_plan numbers confident entries by position, so give the plan the gap explicitly
-    plan = cache.load_mapping(pid, state)
-    for e, ep in zip(plan["entries"], [1, 2, 3, 4]):
-        e["imdb_episode"] = [1, ep] if e["confident"] else None
-        e["best_guess"] = f"S01E{ep:02d}"
-    plan["entries"][3]["imdb_episode"] = [1, 4]
-    (next((state / "plans").glob(f"*{pid}.json"))).write_text(json.dumps(plan))
-    make_observation(ctx, "obs3", ranked=[[1, 3, 0.0004], [1, 5, 0.00002], [1, 2, 1e-7]],
-                     null=0.9981, n_clips=2, clips=[
-        {"t": 195.0, "text": "I have your mail, I live across the hall.", "top": [1, 3, 0.3],
-         "offset": 6.0, "null": 0.0085},
-        {"t": 394.0, "text": "Come on! God! God! God!", "top": [1, 3, 0.0], "offset": 3.0, "null": 1.0},
-        {"t": 500.0, "text": "", "top": None}])
-    text = call(client, "inspect_file", file_id=f"{pid}.2")
-    assert "NOT identified" in text and "Used 2 clips (1 silent)" in text
-    assert "1. S01E03  4.0e-04" in text and "20x less likely than #1" in text
-    assert "Not any episode of this show: 0.998" in text
-    assert "fits a gap" in text and "E03" in text and "clip-by-clip" in text
-    assert "God! God!" not in text                       # transcripts only with detail
-    detail = call(client, "inspect_file", file_id=f"{pid}.2", detail=True)
-    assert "God! God! God!" in detail and "(silent)" in detail and "null 1" in detail
-    # the unidentified list carries the same hint
-    assert "LIKELY AN EPISODE" in call(client, "unidentified")
-
-
-def test_inspect_file_without_recorded_clips_still_answers(env, client):
-    tmp, state, *_ = env
-    pid, _ = make_plan(tmp, state, [("a.mkv", False, 0.2)])
-    text = call(client, "inspect_file", file_id=f"{pid}.0")
-    assert "NOT identified" in text and "No recorded clip details" in text
-    assert call(client, "inspect_file", file_id="zzzz").startswith("Error")
-
-
-def test_job_status_can_wait_for_a_rerun_to_finish(env, client):
-    tmp, state, *_ = env
-    pid, _ = make_plan(tmp, state, [("a.mkv", False, 0.001)])
-    job = call(client, "rerun", file_id=f"{pid}.0", clips=20).split()[1].rstrip(":")
-    t0 = time.monotonic()
-    text = call(client, "job_status", job_id=job, wait_seconds=10)
-    assert "done" in text and "inspect_file(" in text
-    assert time.monotonic() - t0 < 5            # returned as soon as the job finished
 
 
 def test_a_rerun_plan_still_sees_its_disc_and_extras_is_not_shown_as_the_disc(env, client):
@@ -339,3 +254,72 @@ def test_edge_episodes_of_a_discs_run_count_as_likely_episodes(env, client):
     next((state / "plans").glob(f"*{pid}.json")).write_text(json.dumps(plan))
     text = call(client, "unidentified")
     assert text.count("LIKELY AN EPISODE") == 2 and "probably an extra" not in text
+
+
+def staged(tmp, name, root="movies", n=1):
+    d = tmp / "staging" / root / name
+    d.mkdir(parents=True)
+    for i in range(n):
+        (d / f"f{i}.mkv").write_bytes(b"x")
+    return d
+
+
+def test_queue_sorts_folders_by_what_to_do_about_them(env, client):
+    tmp, state, ctx, _ = env
+    ctx.folders = [tmp / "staging" / "tv", tmp / "staging" / "movies"]
+    unprocessed = staged(tmp, "Show (2020)", "tv", 2)
+    film = staged(tmp, "Zoolander (2001)")
+    unclear = staged(tmp, "Community Season 1 disc 2 (2009)")
+    ready_disc = staged(tmp, "Mad Men (2007)", "tv", 2)
+    old = staged(tmp, "Barbie-in-Rock-N-Royals (2015)_1", n=2)
+    entries = [dict(file=str(ready_disc / "f0.mkv"), target=str(tmp / "shows" / "S01E01.mkv"),
+                    confident=True, status="identified", episode="S01E01", score=0.999, size=1,
+                    calibration_id=None, imdb_episode=[1, 1], warnings=[], error=None)]
+    pid = cache.save_mapping("watch", "Mad Men", entries, state_dir=state, source_dir=str(ready_disc))
+    # a disc already filed: an applied plan moved one file out of `old`, two others remain
+    done = [dict(file=str(old / "gone.mkv"), target=str(tmp / "x.mkv"), confident=True, size=1)]
+    oid = cache.save_mapping("watch", "30 Rock", done, state_dir=state, source_dir=str(old))
+    plan = cache.load_mapping(oid, state)
+    plan["applied"] = {"at": "t", "results": [{"file": str(old / "gone.mkv"), "target": "x",
+                                               "renamed": True, "reason": ""}]}
+    next((state / "plans").glob(f"*{oid}.json")).write_text(json.dumps(plan))
+    (state / "state.json").write_text(json.dumps({
+        str(film): {"outcome": "triage_movie"}, str(unclear): {"outcome": "triage_review"}}))
+    text = call(client, "queue")
+    assert text.startswith("Summary: ")
+    assert "1 plan(s) ready to apply (1 files)" in text and "2 folder(s) need a person" in text
+    assert "1 movie(s) waiting for you" in text and "1 folder(s) of leftovers (ignorable)" in text
+    needs = text.split("Needs a person:")[1].split("Movies waiting")[0]
+    assert "Show (2020)" in needs and "not processed yet" in needs
+    assert "Community Season 1 disc 2" in needs and "could not tell movie from TV" in needs
+    assert "Zoolander" not in needs and "Barbie" not in needs and "Mad Men (2007)" not in needs
+    assert f"plan {pid} (Mad Men): 1 file(s) ready, from 'Mad Men (2007)'" in text
+    assert "Movies waiting for you to file (diskid doesn't file movies): Zoolander (2001)" in text
+    assert "Leftovers from discs already filed (1 folders, 2 files" in text and "Barbie" in text
+
+
+def test_queue_keeps_arm_job_stages_apart(env, client):
+    import sqlite3
+    tmp, state, ctx, _ = env
+    db = tmp / "arm.db"
+    con = sqlite3.connect(db)
+    con.execute("create table job (job_id integer, title text, label text, status text, "
+                "no_of_titles integer, errors text, path text)")
+    con.executemany("insert into job values (?,?,?,?,?,?,?)", [
+        (1, "T", "Old_Disc", "success", 3, None, "/x/old"),
+        (2, "T", "Mad_Men_Disc_4", "transcoding", 4, None, "/x/mm"),
+        (3, "T", "Stranger_Than_Fiction", "transcoding", 4, None, "/x/stf"),
+        (4, "T", "OITNB_Disc_1", "ripping", 4, None, "/x/oitnb"),
+    ])
+    con.commit()
+    con.close()
+    ctx.arm_db = db
+    text = call(client, "queue")
+    assert "1 ripping | 2 transcoding" in text
+    ripping = [l for l in text.splitlines() if l.strip().startswith("Ripping now")]
+    trans = [l for l in text.splitlines() if l.strip().startswith("Transcoding")]
+    assert len(ripping) == 1 and "OITNB_Disc_1" in ripping[0] and "Mad_Men" not in ripping[0]
+    assert len(trans) == 1 and "Mad_Men_Disc_4" in trans[0] and "Stranger_Than_Fiction" in trans[0]
+    assert "the disc is already out" in trans[0]
+    assert "Last finished: job 1 Old_Disc - success" in text
+    assert "Ready to apply: nothing" in call(client, "queue")

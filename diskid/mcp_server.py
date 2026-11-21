@@ -118,10 +118,12 @@ def build_server(ctx: McpContext, *, host: str = "127.0.0.1", port: int = 8765,
     @mcp.tool()
     @_safe
     def queue() -> str:
-        """Overview of everything: disc folders in staging and what became of each, the "Ready
-        to apply" plans (files identified and waiting to be moved into the library - what a
-        user may call "available to sync" or "ready to file"), the newest ARM rip jobs, and any
-        reruns in progress. Start here. There is no separate sync step: apply is the move."""
+        """Overview of everything, sorted by what to do: a one-line Summary, what ARM is ripping
+        or transcoding (these are different stages), plans "Ready to apply" (identified files
+        waiting to be moved into the library - what a user may call "available to sync"),
+        folders that need a person, movies waiting for the user, and ignorable leftovers from
+        discs already filed. Start here. Report ARM stages exactly as headed and never call a
+        transcoding job "ripping". There is no separate sync step: apply is the move."""
         text = queries.queue(ctx.state_dir, ctx.folders, ctx.arm_db, ctx.apply_min_score)
         jobs = ctx.reruns.active()
         if jobs:

@@ -276,35 +276,67 @@ def _disc_state(state: dict, folder: Path) -> dict:
     return state.get(str(folder), {})
 
 
-def ready_to_apply(state_dir: Path, min_score: float, limit: int = 10) -> list[str]:
-    """Lines about plans that have files which could be moved right now (newest first).
+def _ready_plans(state_dir: Path, min_score: float, limit: int = 10) -> list[dict]:
+    """Plans that have files which could be moved right now (newest first).
 
     Uses the same checks as `plan_moves`, so stale plans (sources gone, targets
     already there) never show up.
     """
-    lines = []
+    out = []
     for plan in reversed(recent_plans(state_dir)):
         info = plan_moves(plan, min_score)
-        n = len(info["moves"])
-        if info["blocked"]:
-            lines.append(f"  plan {plan['id']} ({plan['show']}): {len(info['blocked'])} file(s) "
-                         "score too low to apply; rerun them first")
-        elif n:
-            lines.append(f"  plan {plan['id']} ({plan['show']}): {n} file(s) ready "
-                         f"-> preview_apply('{plan['id']}')")
-        if len(lines) >= limit:
+        if not (info["moves"] or info["blocked"]):
+            continue
+        out.append(dict(id=plan["id"], show=plan["show"], n=len(info["moves"]),
+                        blocked=len(info["blocked"]),
+                        folders={disc_dir_of(src) for src, _ in info["moves"]}))
+        if len(out) >= limit:
             break
-    return lines
+    return out
+
+
+def _moved_from(state_dir: Path) -> dict[Path, int]:
+    """Disc folder -> how many files any applied plan has already moved out of it."""
+    moved: dict[Path, int] = {}
+    for plan in cache.list_plans(state_dir):
+        for r in (plan.get("applied") or {}).get("results", []):
+            if r["renamed"]:
+                d = disc_dir_of(r["file"])
+                moved[d] = moved.get(d, 0) + 1
+    return moved
+
+
+#: ARM job statuses in words that can't be lumped together ("ripping" is only the first stage).
+_ARM_ACTIVE = {
+    "ripping": "Ripping now (the disc is in the drive)",
+    "transcoding": "Transcoding (the disc is already out; ARM is converting the rips)",
+    "info": "Reading the disc (just inserted)",
+    "waiting": "Waiting to start",
+}
+
+
+def _names(items: list[str], cap: int = 8) -> str:
+    return ", ".join(items[:cap]) + (f", +{len(items) - cap} more" if len(items) > cap else "")
 
 
 def queue(state_dir: Path, folders: list[Path], arm_db: Path | None = None,
           min_score: float = 0.99) -> str:
-    """Disc folders on disk, each with its state, plus the latest ARM jobs."""
+    """What needs attention, sorted by what to do about it.
+
+    Staging folders are split into: ready to apply (shown under their plans),
+    still being written by ARM, left over from discs already filed (ignorable),
+    movies waiting for a person (diskid doesn't file movies), and the few that
+    need a person to look.
+    """
     try:
         state = json.loads((state_dir / "state.json").read_text())
     except (OSError, json.JSONDecodeError):
         state = {}
-    lines = []
+    ready = _ready_plans(state_dir, min_score)
+    ready_folders = {d for r in ready for d in r["folders"]}
+    moved = _moved_from(state_dir)
+
+    busy, leftovers, movies, look = [], [], [], []
     for root in folders:
         try:
             discs = sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith("."))
@@ -319,31 +351,71 @@ def queue(state_dir: Path, folders: list[Path], arm_db: Path | None = None,
                 continue
             s = _disc_state(state, d)
             outcome = s.get("outcome")
-            if outcome == "done":
-                what = f"checked: {s.get('identified')} of {s.get('total')} files identified (plan {s.get('plan')})"
-                if s.get("renamed"):
-                    what += f", {s['renamed']} already moved"
-            elif outcome in _OUTCOME_WORDS:
-                what = _OUTCOME_WORDS[outcome]
-            elif outcome:
-                what = outcome.replace("_", " ")
+            if d in ready_folders:
+                continue                                    # listed under Ready to apply
+            if arm_db and arm.job_active(arm_db, d):
+                busy.append((d.name, n))
+            elif moved.get(d):
+                leftovers.append((d.name, n))
+            elif outcome == "triage_movie":
+                movies.append((d.name, n))
             else:
-                what = "not processed yet (still being ripped, or settling)"
-            lines.append(f"  [{root.name}] {d.name}  {n} files  {what}")
-    head = [f"{len(lines)} disc folder(s) in staging:"] if lines else ["No disc folders in staging."]
-    out = head + lines
-    ready = ready_to_apply(state_dir, min_score)
-    out.append("Ready to apply (identified files that can be moved into the library now):"
-               if ready else "Ready to apply: nothing. No plan has files waiting to be moved.")
-    out += ready
-    if arm_db:
-        jobs = arm.recent_jobs(arm_db, 3)
-        if jobs:
-            out.append("Latest ARM jobs:")
-            for j in jobs:
-                extra = f", errors: {j['errors']}" if j.get("errors") else ""
-                out.append(f"  job {j['job_id']}  {j.get('label') or j.get('title')}  "
-                           f"{j['status']}  ({j.get('no_of_titles')} titles){extra}")
+                if outcome == "done":
+                    why = f"checked, {s.get('identified')} of {s.get('total')} files identified, none ready"
+                elif outcome in _OUTCOME_WORDS:
+                    why = _OUTCOME_WORDS[outcome]
+                else:
+                    why = "not processed yet (still settling, or still being written)"
+                look.append(f"  [{root.name}] {d.name}: {n} file(s) - {why}")
+
+    jobs = arm.recent_jobs(arm_db, 8) if arm_db else []
+    active = {k: [j for j in jobs if j["status"] == k] for k in _ARM_ACTIVE}
+    done = [j for j in jobs if j["status"] in arm.FINISHED]
+
+    parts = [f"{len(active['ripping'])} ripping", f"{len(active['transcoding'])} transcoding"] if jobs else []
+    parts.append(f"{len(ready)} plan(s) ready to apply ({sum(r['n'] for r in ready)} files)")
+    parts.append(f"{len(look)} folder(s) need a person")
+    if movies:
+        parts.append(f"{len(movies)} movie(s) waiting for you")
+    if leftovers:
+        parts.append(f"{len(leftovers)} folder(s) of leftovers (ignorable)")
+    out = ["Summary: " + " | ".join(parts)]
+
+    if jobs:
+        out.append("ARM (the ripper):")
+        for status, words in _ARM_ACTIVE.items():
+            if active[status]:
+                out.append(f"  {words}: " + "; ".join(
+                    f"job {j['job_id']} {j.get('label') or j.get('title')} ({j.get('no_of_titles')} titles)"
+                    for j in active[status]))
+        for j in done[:2]:
+            extra = f", errors: {j['errors']}" if j.get("errors") else ""
+            out.append(f"  Last finished: job {j['job_id']} {j.get('label') or j.get('title')} - "
+                       f"{j['status']}{extra}")
+    if ready:
+        out.append("Ready to apply (identified files that can be moved into the library now):")
+        for r in ready:
+            folder = _names(sorted(d.name for d in r["folders"]), 2)
+            out.append(f"  plan {r['id']} ({r['show']}): " + (
+                f"{r['blocked']} file(s) score too low to apply; rerun them first" if r["blocked"] and not r["n"]
+                else f"{r['n']} file(s) ready, from '{folder}' -> preview_apply('{r['id']}')"))
+    else:
+        out.append("Ready to apply: nothing. No plan has files waiting to be moved.")
+    if busy:
+        out.append("Still being written by ARM (not ready yet): "
+                   + _names([f"{name} ({n})" for name, n in busy]))
+    if look:
+        out.append("Needs a person:")
+        out += look
+    if movies:
+        out.append("Movies waiting for you to file (diskid doesn't file movies): "
+                   + _names([name for name, _ in movies]))
+    if leftovers:
+        files = sum(n for _, n in leftovers)
+        out.append(f"Leftovers from discs already filed ({len(leftovers)} folders, {files} files; "
+                   "usually extras or titles that matched nothing; safe to ignore): "
+                   + _names([f"{name} ({n})" for name, n in leftovers], 6)
+                   + ". unidentified lists them with hints.")
     return "\n".join(out)
 
 
