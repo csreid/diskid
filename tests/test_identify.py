@@ -188,3 +188,42 @@ def test_no_calibration_log_by_default(tmp_path, make_identifier):
     (video,) = touch(tmp_path, "title_t01.mkv")
     res = make_identifier({"title_t01.mkv": (1, 3)}).identify_file(video, SHOW)
     assert res.calibration_id is None
+
+
+@pytest.fixture
+def movie_ident(monkeypatch, docs, tmp_path):
+    """check_movie with the archive faked: movie ids 1..N are the fake show's episodes."""
+    keys = sorted(docs)
+    by_id = {i + 1: k for i, k in enumerate(keys)}
+    monkeypatch.setattr(ident_mod.subdb, "movie_word_docs", lambda z, m: docs[by_id[m]])
+    monkeypatch.setattr(ident_mod.subdb, "movie_catalog", lambda z: {m: (2000, 1) for m in by_id})
+    monkeypatch.setattr(ident_mod.audio, "probe_duration", lambda p: 1500.0)
+    zip_path = tmp_path / "en.zip"
+    zip_path.write_bytes(b"")
+    ident = Identifier(IdentifierConfig(zip_path=zip_path, order="imdb"))
+
+    def build(true_movie: int):
+        monkeypatch.setattr(
+            ident, "_transcribe_clip",
+            lambda video, start: snippet_of(docs, by_id[true_movie], 100 + int(start) % 200))
+        return ident
+    return build
+
+
+def test_check_movie_matches_the_right_movie(tmp_path, movie_ident):
+    (video,) = touch(tmp_path, "movie.mkv")
+    res = movie_ident(2).check_movie(video, 2, decoys=3)
+    assert res.confident and res.score > 0.99 and res.imdb_tt == "tt0000002"
+
+
+def test_check_movie_rejects_a_different_movie(tmp_path, movie_ident):
+    (video,) = touch(tmp_path, "movie.mkv")
+    res = movie_ident(3).check_movie(video, 2, decoys=3)  # audio is movie 3, claim is movie 2
+    assert not res.confident and res.score < 0.5
+
+
+def test_check_movie_without_subtitles(tmp_path, movie_ident, monkeypatch):
+    (video,) = touch(tmp_path, "movie.mkv")
+    monkeypatch.setattr(ident_mod.subdb, "movie_word_docs", lambda z, m: [])
+    with pytest.raises(ShowNotFoundError):
+        movie_ident(1).check_movie(video, 1)

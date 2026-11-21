@@ -97,6 +97,43 @@ def make_identifier(args, quiet: bool = False) -> Identifier:
     return Identifier(config, progress=None if quiet else progress)
 
 
+def cmd_check_movie(args) -> int:
+    from . import imdb
+    if args.imdb:
+        m = re.fullmatch(r"(?:tt)?(\d+)", args.imdb.strip())
+        if not m:
+            sys.exit(f"error: bad IMDb id {args.imdb!r}")
+        movie_id, title = int(m.group(1)), args.imdb
+    elif args.title:
+        name, year = imdb.parse_title_year(args.title)
+        try:
+            hits = imdb.resolve_movie_hits(name, year)
+        except OSError as e:
+            sys.exit(f"error: IMDb lookup failed: {e}")
+        if not hits:
+            sys.exit(f"error: no movie found on IMDb for {args.title!r}")
+        movie_id, title, y = hits[0]
+        log(f"resolved {args.title!r} -> tt{movie_id:07d} {title} ({y})")
+    else:
+        sys.exit("error: pass --imdb or --title")
+    ident = make_identifier(args)
+    try:
+        res = ident.check_movie(args.video, movie_id)
+    except (ShowNotFoundError, FileNotFoundError) as e:
+        sys.exit(f"error: {e}")
+    if args.json:
+        print(json.dumps(res.to_dict(), indent=2))
+    else:
+        verdict = "MATCH" if res.confident else "NOT a confident match"
+        rt = f"{res.subtitle_runtime / 60:.0f} min" if res.subtitle_runtime else "?"
+        print(f"{res.imdb_tt} ({res.year}): {verdict}")
+        print(f"  p(this movie)={res.score:.3f}  p(none of them)={res.null:.3f}  "
+              f"best decoy={res.top_other:.3f}  clips={res.clips_used}")
+        print(f"  file {res.duration / 60:.0f} min vs subtitles ~{rt} "
+              f"({res.n_subtitle_files} subtitle files)")
+    return 0 if res.confident else 1
+
+
 def cmd_identify(args) -> int:
     ident = make_identifier(args)
     try:
@@ -418,6 +455,14 @@ def main() -> None:
     p_id.add_argument("video", type=Path)
     common(p_id)
 
+    p_movie = sub.add_parser(
+        "check-movie", help="check whether a video is a given movie (by IMDb id or title)")
+    p_movie.add_argument("video", type=Path)
+    p_movie.add_argument("--imdb", help="IMDb id of the claimed movie, e.g. tt0116629")
+    p_movie.add_argument("--title", help="movie title, optionally 'Title (Year)'; "
+                                         "resolved via IMDb when --imdb isn't given")
+    common(p_movie)
+
     p_disc = sub.add_parser("identify-disc", help="identify every video in a ripped-disc folder")
     p_disc.add_argument("dir", type=Path)
     common(p_disc)
@@ -524,11 +569,14 @@ def main() -> None:
             sys.exit(f"error: no such file: {args.zip}")
         sys.exit(cmd_mcp(args))
 
-    target = args.video if args.command == "identify" else args.dir
-    if not (target.is_file() if args.command == "identify" else target.is_dir()):
-        sys.exit(f"error: no such {'file' if args.command == 'identify' else 'directory'}: {target}")
+    is_file_cmd = args.command in ("identify", "check-movie")
+    target = args.video if is_file_cmd else args.dir
+    if not (target.is_file() if is_file_cmd else target.is_dir()):
+        sys.exit(f"error: no such {'file' if is_file_cmd else 'directory'}: {target}")
     if not args.zip.is_file():
         sys.exit(f"error: no such file: {args.zip}")
+    if args.command == "check-movie":
+        sys.exit(cmd_check_movie(args))
 
     handler = cmd_identify if args.command == "identify" else cmd_identify_disc
     sys.exit(handler(args))

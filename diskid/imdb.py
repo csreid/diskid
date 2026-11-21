@@ -24,6 +24,22 @@ def resolve_show_hits(name: str, year: int | None = None) -> list[tuple[int, str
     return [(int(hit["id"].removeprefix("tt")), hit["l"], hit.get("y")) for hit in hits]
 
 
+def resolve_movie_hits(name: str, year: int | None = None) -> list[tuple[int, str, int | None]]:
+    """Plausible (numeric imdb id, canonical title, year) matches for a movie title.
+
+    Same suggestion API as shows, filtered to feature films; a hit whose year
+    matches `year` sorts first.
+    """
+    q = urllib.parse.quote(name.lower())
+    url = f"https://v2.sg.media-imdb.com/suggestion/{name[0].lower()}/{q}.json"
+    with urllib.request.urlopen(url, timeout=10) as resp:
+        data = json.load(resp)
+    hits = [hit for hit in data.get("d", []) if hit.get("qid") in ("movie", "tvMovie")]
+    if year is not None:
+        hits.sort(key=lambda hit: hit.get("y") != year)
+    return [(int(hit["id"].removeprefix("tt")), hit["l"], hit.get("y")) for hit in hits]
+
+
 def resolve_show_candidates(name: str, year: int | None = None) -> list[tuple[int, str]]:
     """`resolve_show_hits` without the year: (numeric imdb id, canonical title)."""
     return [(i, t) for i, t, _ in resolve_show_hits(name, year)]

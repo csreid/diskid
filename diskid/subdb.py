@@ -18,6 +18,8 @@ EPISODE_RE = re.compile(
     r"OpenSubtitles/raw/en/[^/]+/(\d+)_(\d+)_(\d+)_(\d+)/[^/]+\.xml$"
 )
 
+MOVIE_RE = re.compile(r"OpenSubtitles/raw/en/(\d+)/(\d+)/[^/]+\.xml$")
+
 EpisodeKey = tuple[int, int]  # (season, episode)
 
 
@@ -98,3 +100,53 @@ def show_word_docs(zip_path: Path, show_id: int) -> dict[EpisodeKey, list[list[t
         for key, entries in episodes.items():
             docs[key] = [subtitle_words(z, e) for e in entries]
     return docs
+
+
+def movie_index(zip_path: Path) -> Path:
+    """Build (once) a TSV of imdb_id, year, zip entry for all movie subtitle files.
+
+    Movies live under a bare IMDb id directory (no `_`), inside the movie's
+    release-year directory. Kept beside the zip as `<zip>.movies.tsv`.
+    """
+    index = zip_path.with_suffix(".movies.tsv")
+    if index.exists():
+        return index
+    print(f"building movie index for {zip_path} (one-time)...", file=sys.stderr)
+    tmp = index.with_name(index.name + ".part")
+    with zipfile.ZipFile(zip_path) as z, open(tmp, "w") as out:
+        for entry in z.namelist():
+            m = MOVIE_RE.fullmatch(entry)
+            if m:
+                year, imdb_id = m.groups()
+                out.write(f"{imdb_id}\t{year}\t{entry}\n")
+    tmp.replace(index)  # never leave a half-written index that looks complete
+    return index
+
+
+def movie_subtitles(zip_path: Path, imdb_id: int) -> list[str]:
+    """Zip entries of every subtitle file for the movie with this numeric IMDb id."""
+    entries = []
+    with open(movie_index(zip_path)) as f:
+        for line in f:
+            movie, _, entry = line.rstrip("\n").split("\t")
+            if int(movie) == imdb_id:
+                entries.append(entry)
+    return entries
+
+
+def movie_catalog(zip_path: Path) -> dict[int, tuple[int, int]]:
+    """Map imdb id -> (release year, number of subtitle files), for every movie."""
+    catalog: dict[int, tuple[int, int]] = {}
+    with open(movie_index(zip_path)) as f:
+        for line in f:
+            movie, year, _ = line.rstrip("\n").split("\t")
+            _, n = catalog.get(int(movie), (int(year), 0))
+            catalog[int(movie)] = (int(year), n + 1)
+    return catalog
+
+
+def movie_word_docs(zip_path: Path, imdb_id: int) -> list[list[tuple[str, float]]]:
+    """Every subtitle file of one movie as a (word, timestamp) sequence."""
+    entries = movie_subtitles(zip_path, imdb_id)
+    with zipfile.ZipFile(zip_path) as z:
+        return [subtitle_words(z, e) for e in entries]

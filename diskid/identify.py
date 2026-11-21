@@ -375,6 +375,25 @@ class _ShowData:
 
 
 @dataclass
+class MovieCheck:
+    """Does a file's audio match a claimed movie's subtitles?"""
+
+    imdb_tt: str
+    year: int | None
+    score: float            # posterior of the claimed movie among itself + decoys + null
+    null: float             # posterior that the file is none of them
+    clips_used: int
+    duration: float
+    subtitle_runtime: float | None   # canonical runtime from the subtitles, seconds
+    n_subtitle_files: int
+    confident: bool
+    top_other: float        # best decoy's posterior (should be ~0)
+
+    def to_dict(self) -> dict[str, Any]:
+        return _jsonable(self)
+
+
+@dataclass
 class _Raw:
     """A file's matching outcome before disc-level assignment."""
 
@@ -541,6 +560,45 @@ class Identifier:
         data = _ShowData(show, docs, subdb.episode_imdb_ids(zip_path, show.imdb_id))
         self._shows[show.imdb_id] = data
         return data
+
+    def check_movie(self, video: Path, imdb_id: int, decoys: int = 8) -> MovieCheck:
+        """Verify `video` is the movie with this numeric IMDb id.
+
+        Reuses the episode matcher: the claimed movie competes against a few
+        random other movies (which give the background word model something
+        to compare to) and the null hypothesis. A file of some other movie, or
+        an extra, ends with its probability mass on the null/decoys.
+        """
+        import random
+        from .match import _episode_length
+
+        zip_path = self.config.zip_path
+        if not Path(zip_path).is_file():
+            raise FileNotFoundError(zip_path)
+        claimed = subdb.movie_word_docs(zip_path, imdb_id)
+        claimed = [d for d in claimed if d]
+        if not claimed:
+            raise ShowNotFoundError(f"no subtitles for tt{imdb_id:07d} in {zip_path}")
+        catalog = subdb.movie_catalog(zip_path)
+        rng = random.Random(imdb_id)
+        others = rng.sample([m for m in catalog if m != imdb_id], decoys)
+        docs: dict = {(1, 0): claimed}  # (0, 0) is the matcher's null key
+        for i, other in enumerate(others, 1):
+            other_docs = [d for d in subdb.movie_word_docs(zip_path, other)[:3] if d]
+            if other_docs:
+                docs[(1, i)] = other_docs
+        total = audio.probe_duration(video)
+        data = _ShowData(Show(imdb_id, f"tt{imdb_id:07d}", None), docs, {})
+        ident = self._run_clips(video, data, total)
+        ranked = {c.key: c.score for c in ident.ranked()}
+        return MovieCheck(
+            imdb_tt=f"tt{imdb_id:07d}", year=catalog.get(imdb_id, (None, 0))[0],
+            score=ranked.get((1, 0), 0.0), null=ident.null_probability(),
+            clips_used=ident.n_clips, duration=total,
+            subtitle_runtime=_episode_length(claimed), n_subtitle_files=len(claimed),
+            confident=ranked.get((1, 0), 0.0) >= self.config.min_score,
+            top_other=max((v for k, v in ranked.items() if k != (1, 0)), default=0.0),
+        )
 
     def _transcribe_clip(self, video: Path, start: float) -> str:
         with tempfile.TemporaryDirectory() as tmp:
